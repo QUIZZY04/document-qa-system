@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Document Knowledge Assistant</title>
+
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+:root{
+    --primary:#0B3D91;
+    --primary-dark:#082f73;
+    --success:#16a34a;
+    --light:#f4f7fc;
+    --white:#ffffff;
+    --text:#1f2937;
+    --muted:#6b7280;
+    --border:#dbe4f0;
+}
+
+*{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+    font-family:'Inter',sans-serif;
+}
+
+body{
+    background:var(--light);
+    color:var(--text);
+}
+
+header{
+    background:var(--primary);
+    color:white;
+    padding:18px 30px;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+}
+
+.logo{
+    font-size:24px;
+    font-weight:700;
+}
+
+.hero{
+    text-align:center;
+    padding:60px 20px 30px;
+}
+
+.hero h1{
+    font-size:48px;
+    color:var(--primary);
+    margin-bottom:15px;
+}
+
+.hero p{
+    max-width:800px;
+    margin:auto;
+    color:var(--muted);
+    font-size:18px;
+}
+
+.search-section{
+    max-width:1200px;
+    margin:auto;
+    padding:20px;
+}
+
+.search-card{
+    background:white;
+    border-radius:18px;
+    padding:30px;
+    box-shadow:0 4px 15px rgba(0,0,0,0.08);
+}
+
+textarea{
+    width:100%;
+    min-height:140px;
+    border:2px solid var(--border);
+    border-radius:12px;
+    padding:15px;
+    font-size:16px;
+    resize:vertical;
+}
+
+textarea:focus{
+    outline:none;
+    border-color:var(--primary);
+}
+
+.ask-btn{
+    margin-top:15px;
+    background:var(--primary);
+    color:white;
+    border:none;
+    padding:14px 30px;
+    border-radius:10px;
+    cursor:pointer;
+    font-size:16px;
+    font-weight:600;
+}
+
+.ask-btn:hover{
+    background:var(--primary-dark);
+}
+
+.stats{
+    max-width:1200px;
+    margin:25px auto;
+    padding:0 20px;
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+    gap:20px;
+}
+
+.card{
+    background:white;
+    border-radius:15px;
+    padding:20px;
+    box-shadow:0 4px 15px rgba(0,0,0,0.08);
+}
+
+.card-title{
+    color:var(--muted);
+    font-size:13px;
+    text-transform:uppercase;
+    margin-bottom:8px;
+}
+
+.card-value{
+    font-size:24px;
+    font-weight:700;
+}
+
+.answer-section{
+    max-width:1200px;
+    margin:auto;
+    padding:20px;
+}
+
+.answer-card{
+    background:white;
+    border-radius:18px;
+    padding:30px;
+    box-shadow:0 4px 15px rgba(0,0,0,0.08);
+}
+
+.answer-title{
+    color:var(--primary);
+    font-size:26px;
+    margin-bottom:15px;
+}
+
+.answer-text{
+    line-height:1.8;
+    font-size:16px;
+}
+
+.citation{
+    margin-top:20px;
+    background:#eef5ff;
+    border-left:5px solid var(--primary);
+    padding:15px;
+    border-radius:8px;
+}
+
+.recent{
+    max-width:1200px;
+    margin:auto;
+    padding:20px;
+}
+
+.recent-card{
+    background:white;
+    border-radius:18px;
+    padding:25px;
+    box-shadow:0 4px 15px rgba(0,0,0,0.08);
+}
+
+.recent-card ul{
+    margin-top:15px;
+    padding-left:20px;
+}
+
+.recent-card li{
+    margin-bottom:10px;
+}
+
+footer{
+    background:var(--primary);
+    color:white;
+    text-align:center;
+    padding:20px;
+    margin-top:40px;
+}
+
+@media(max-width:768px){
+.hero h1{
+    font-size:34px;
+}
+}
+</style>
+</head>
+
+<body>
+
+<header>
+    <div class="logo">📚 Document Knowledge Assistant</div>
+</header>
+
+<section class="hero">
+    <h1>AI Powered Document Search</h1>
+    <p>
+        Search across circulars, manuals, procedures, contracts and technical documents.
+        Get answers with source references and page citations.
+    </p>
+</section>
+
+<section class="search-section">
+    <div class="search-card">
+
+        <textarea id="question"
+        placeholder="Example: Who is the approving authority for award of contract above ₹6.5 crore?"></textarea>
+
+        <button class="ask-btn" onclick="askQuestion()">
+            🔍 Ask Question
+        </button>
+
+    </div>
+</section>
+
+<section class="stats">
+
+    <div class="card">
+        <div class="card-title">Source PDF</div>
+        <div class="card-value" id="sourcePdf">-</div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">Page Number</div>
+        <div class="card-value" id="pageNumber">-</div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">Confidence</div>
+        <div class="card-value" id="confidence">-</div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">Clause</div>
+        <div class="card-value" id="clause">-</div>
+    </div>
+
+</section>
+
+<section class="answer-section">
+
+    <div class="answer-card">
+
+        <div class="answer-title">
+            Answer
+        </div>
+
+        <div class="answer-text" id="answer">
+            Ask a question to retrieve information from uploaded documents.
+        </div>
+
+        <div class="citation">
+            <strong>Citation:</strong>
+            <div id="citationText">
+                Source references will appear here.
+            </div>
+        </div>
+
+    </div>
+
+</section>
+
+<section class="recent">
+
+    <div class="recent-card">
+
+        <h3>Recent Example Questions</h3>
+
+        <ul>
+            <li>Who is the approving authority for award above ₹6.5 crore?</li>
+            <li>What is the purchase preference margin for Class-I suppliers?</li>
+            <li>What are the provisions of Risk & Cost purchase?</li>
+            <li>What is the permissible share for MSE suppliers?</li>
+        </ul>
+
+    </div>
+
+</section>
+
+<footer>
+    © 2026 Document Knowledge Assistant | Firebase + OpenAI
+</footer>
+
+<script>
+function askQuestion(){
+
+    const question = document.getElementById("question").value;
+
+    if(question.trim() === ""){
+        alert("Please enter a question.");
+        return;
+    }
+
+    document.getElementById("answer").innerHTML =
+        "Searching documents...";
+
+    // OpenAI + Firebase integration will be added later
+}
+</script>
+
+</body>
+</html>
