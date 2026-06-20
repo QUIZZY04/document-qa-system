@@ -1,0 +1,28 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Admin verification helper function
+    function isAdmin() {
+      return request.auth != null 
+        && request.auth.token.email_verified == true 
+        && exists(/databases/$(database)/documents/admins/$(request.auth.token.email));
+    }
+
+    // Rules for the admins whitelist collection
+    match /admins/{email} {
+      // Admins can read the admin list; client-side write access is blocked
+      allow read: if isAdmin();
+      allow write: if false; 
+    }
+
+    // Rules for the documents collection
+    match /documents/{document} {
+      // Public users can read documents to search them
+      allow read: if true;
+      
+      // Only validated admins can upload, edit, or delete documents
+      allow create, update, delete: if isAdmin();
+    }
+  }
+}

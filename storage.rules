@@ -1,0 +1,21 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Cross-service verification: query Firestore to check if the authenticated email exists in the admins collection
+    function isAdmin() {
+      return request.auth != null 
+        && request.auth.token.email_verified == true 
+        && firestore.exists(/databases/(default)/documents/admins/$(request.auth.token.email));
+    }
+
+    // Rules for the documents folder
+    match /documents/{allPaths=**} {
+      // Public users can view and download files
+      allow read: if true;
+      
+      // Only validated admins can write or delete files
+      allow write, delete: if isAdmin();
+    }
+  }
+}
