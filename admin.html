@@ -369,21 +369,55 @@ Document Knowledge Assistant Admin Dashboard
 
 </div>
 
-<script>
+<script type="module">
+import { auth, db } from './js/firebase-config.js';
+import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-auth.js";
+import { doc, getDoc } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-firestore.js";
 
-function uploadPDFs(){
+// Check authentication and authorization
+onAuthStateChanged(auth, async (user) => {
+    if (user) {
+        try {
+            const email = user.email.toLowerCase().trim();
+            const adminDocRef = doc(db, "admins", email);
+            const adminDocSnap = await getDoc(adminDocRef);
+            
+            if (!adminDocSnap.exists()) {
+                // If not whitelisted, sign out and redirect
+                await signOut(auth);
+                window.location.href = "document-qa-system-main/login.html";
+            } else {
+                // If whitelisted, hook up the logout button in header
+                const adminBtn = document.querySelector('.header .btn');
+                if (adminBtn) {
+                    adminBtn.textContent = `Logout (${user.displayName || user.email.split('@')[0]})`;
+                    adminBtn.onclick = async () => {
+                        await signOut(auth);
+                        window.location.href = "index.html";
+                    };
+                }
+            }
+        } catch (err) {
+            console.error("Admin verification error:", err);
+            window.location.href = "document-qa-system-main/login.html";
+        }
+    } else {
+        // Redirect to login page if not logged in
+        window.location.href = "document-qa-system-main/login.html";
+    }
+});
 
-const files=document.getElementById("pdfUpload").files;
+// Expose upload function globally
+window.uploadPDFs = function() {
+    const files = document.getElementById("pdfUpload").files;
 
-if(files.length===0){
-alert("Please select at least one PDF.");
-return;
-}
+    if (files.length === 0) {
+        alert("Please select at least one PDF.");
+        return;
+    }
 
-alert(files.length + " PDF(s) selected.\nFirebase integration will be added next.");
-
-}
-
+    alert(files.length + " PDF(s) selected.\nFirebase integration will be added next.");
+};
 </script>
 
 </body>

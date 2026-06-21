@@ -255,9 +255,10 @@ footer{
 
 <ul class="menu">
 <li><a href="index.html">🏠 Home</a></li>
-<li><a href="admin.html#table-section">📄 Documents</a></li>
-<li><a href="admin.html#upload-section">📤 Upload PDFs</a></li>
-<li><a href="admin.html">⚙ Settings</a></li>
+<li class="admin-opt" style="display: none;"><a href="admin.html#table-section">📄 Documents</a></li>
+<li class="admin-opt" style="display: none;"><a href="admin.html#upload-section">📤 Upload PDFs</a></li>
+<li class="admin-opt" style="display: none;"><a href="admin.html">⚙ Settings</a></li>
+<li id="auth-menu-item"><a href="document-qa-system-main/login.html">🔑 Admin Login</a></li>
 </ul>
 
 </div>
@@ -357,9 +358,12 @@ footer{
 
 </div>
 
-<script>
-function askQuestion(){
+<script type="module">
+import { auth, db } from './js/firebase-config.js';
+import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-auth.js";
+import { doc, getDoc } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-firestore.js";
 
+window.askQuestion = function() {
     const question = document.getElementById("question").value;
 
     if(question.trim() === ""){
@@ -371,7 +375,42 @@ function askQuestion(){
         "Searching documents...";
 
     // OpenAI + Firebase integration will be added later
-}
+};
+
+onAuthStateChanged(auth, async (user) => {
+    const adminOpts = document.querySelectorAll('.admin-opt');
+    const authMenuItem = document.getElementById('auth-menu-item');
+    
+    if (user) {
+        try {
+            const email = user.email.toLowerCase().trim();
+            const adminDocRef = doc(db, "admins", email);
+            const adminDocSnap = await getDoc(adminDocRef);
+            
+            if (adminDocSnap.exists()) {
+                // Verified admin -> Show options and logout button
+                adminOpts.forEach(opt => opt.style.display = 'block');
+                authMenuItem.innerHTML = `<a href="#" id="logoutBtn">🚪 Logout</a>`;
+                document.getElementById('logoutBtn').addEventListener('click', async (e) => {
+                    e.preventDefault();
+                    await signOut(auth);
+                });
+            } else {
+                // Not in whitelisted admin list -> Hide options and show sign-in
+                adminOpts.forEach(opt => opt.style.display = 'none');
+                authMenuItem.innerHTML = `<a href="document-qa-system-main/login.html">🔑 Admin Login</a>`;
+            }
+        } catch (err) {
+            console.error("Admin verification error:", err);
+            adminOpts.forEach(opt => opt.style.display = 'none');
+            authMenuItem.innerHTML = `<a href="document-qa-system-main/login.html">🔑 Admin Login</a>`;
+        }
+    } else {
+        // Logged out -> Hide options and show sign-in
+        adminOpts.forEach(opt => opt.style.display = 'none');
+        authMenuItem.innerHTML = `<a href="document-qa-system-main/login.html">🔑 Admin Login</a>`;
+    }
+});
 </script>
 
 </body>

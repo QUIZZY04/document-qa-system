@@ -104,7 +104,7 @@ h1 {
 </div>
 
 <script type="module">
-import { db, auth } from './js/firebase-config.js';
+import { db, auth } from '../js/firebase-config.js';
 import { GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
@@ -124,7 +124,7 @@ async function loginWithGoogle() {
         
         if (adminDocSnap.exists()) {
             // Authorized admin -> Redirect
-            window.location.href = "admin.html";
+            window.location.href = "../admin.html";
         } else {
             // Unauthorized -> Sign out immediately and display error
             await signOut(auth);
