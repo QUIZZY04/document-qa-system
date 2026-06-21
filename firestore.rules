@@ -11,8 +11,10 @@ service cloud.firestore {
 
     // Rules for the admins whitelist collection
     match /admins/{email} {
-      // Admins can read the admin list; client-side write access is blocked
-      allow read: if isAdmin();
+      // Allow users to read their own admin document to check whitelist status; client-side write access is blocked
+      allow read: if request.auth != null 
+        && request.auth.token.email_verified == true 
+        && request.auth.token.email.toLowerCase() == email.toLowerCase();
       allow write: if false; 
     }
 
