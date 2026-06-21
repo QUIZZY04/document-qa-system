@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin Login - Document Knowledge Assistant</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+    --primary: #0B3D91;
+    --primary-dark: #082f73;
+    --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+    --card-bg: rgba(255, 255, 255, 0.03);
+    --card-border: rgba(255, 255, 255, 0.08);
+}
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: 'Inter', sans-serif;
+}
+body {
+    background: var(--bg-gradient);
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    color: #f1f5f9;
+}
+.login-card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    backdrop-filter: blur(16px);
+    border-radius: 24px;
+    padding: 45px 40px;
+    width: 100%;
+    max-width: 420px;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+    text-align: center;
+}
+.logo-area {
+    font-size: 32px;
+    margin-bottom: 15px;
+}
+h1 {
+    font-size: 22px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: #ffffff;
+}
+.subtitle {
+    color: #94a3b8;
+    font-size: 14px;
+    margin-bottom: 35px;
+}
+.btn-google {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    width: 100%;
+    background: #ffffff;
+    color: #1e293b;
+    border: none;
+    padding: 14px;
+    border-radius: 12px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+}
+.btn-google:hover {
+    background: #f8fafc;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 12px rgba(0, 0, 0, 0.1);
+}
+.btn-google img {
+    width: 20px;
+    height: 20px;
+}
+.error-msg {
+    margin-top: 20px;
+    color: #f87171;
+    font-size: 13px;
+    display: none;
+    line-height: 1.5;
+}
+</style>
+</head>
+<body>
+
+<div class="login-card">
+    <div class="logo-area">📚</div>
+    <h1>Knowledge Admin</h1>
+    <div class="subtitle">Sign in to manage documents & vector indices</div>
+    
+    <button class="btn-google" onclick="loginWithGoogle()">
+        <img src="https://www.gstatic.com/images/branding/product/1x/gsa_android_64dp.png" alt="Google Logo">
+        Sign in with Google
+    </button>
+    
+    <div class="error-msg" id="errorMsg"></div>
+</div>
+
+<script type="module">
+import { db, auth } from './js/firebase-config.js';
+import { GoogleAuthProvider, signInWithPopup, signOut } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { doc, getDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+async function loginWithGoogle() {
+    const errorEl = document.getElementById("errorMsg");
+    errorEl.style.display = "none";
+    
+    const provider = new GoogleAuthProvider();
+    try {
+        const result = await signInWithPopup(auth, provider);
+        const user = result.user;
+        
+        // Safeguard case-insensitive & trimmed email check
+        const email = user.email.toLowerCase().trim();
+        const adminDocRef = doc(db, "admins", email);
+        const adminDocSnap = await getDoc(adminDocRef);
+        
+        if (adminDocSnap.exists()) {
+            // Authorized admin -> Redirect
+            window.location.href = "admin.html";
+        } else {
+            // Unauthorized -> Sign out immediately and display error
+            await signOut(auth);
+            showError("Access denied: Your email is not whitelisted as an administrator.");
+        }
+    } catch (err) {
+        console.error("Login failed:", err);
+        showError(err.message);
+    }
+}
+
+function showError(msg) {
+    const errorEl = document.getElementById("errorMsg");
+    errorEl.textContent = msg;
+    errorEl.style.display = "block";
+}
+
+window.loginWithGoogle = loginWithGoogle;
+</script>
+
+</body>
+</html>
