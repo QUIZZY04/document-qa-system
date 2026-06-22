@@ -49,6 +49,16 @@ function cosineSimilarity(vecA, vecB) {
     return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
+// Map raw cosine similarity scores of OpenAI embeddings to an intuitive confidence percentage
+function scaleConfidence(similarity) {
+    if (similarity <= 0.2) return Math.round(similarity * 100);
+    if (similarity <= 0.3) return Math.round(20 + (similarity - 0.2) * 300); // 20% to 50%
+    if (similarity <= 0.5) return Math.round(50 + (similarity - 0.3) * 150); // 50% to 80%
+    if (similarity <= 0.7) return Math.round(80 + (similarity - 0.5) * 80);  // 80% to 96%
+    return Math.round(96 + (similarity - 0.7) * 15); // 96% to 99% (cap at 99%)
+}
+
+
 // Custom page-by-page PDF parser using pdf-parse
 async function parsePdfPages(buffer) {
     let pagesText = [];
@@ -85,10 +95,14 @@ async function parsePdfPages(buffer) {
 
 // Ingestion Listener: Listen to documents with "Processing" status
 console.log("Starting real-time PDF Ingestion Listener...");
+const processingDocs = new Set();
 db.collection("documents").where("status", "==", "Processing")
     .onSnapshot((snapshot) => {
         snapshot.forEach(async (docSnap) => {
             const docId = docSnap.id;
+            if (processingDocs.has(docId)) return;
+            processingDocs.add(docId);
+            
             const docData = docSnap.data();
             const docRef = db.collection("documents").doc(docId);
             
@@ -133,7 +147,8 @@ db.collection("documents").where("status", "==", "Processing")
                     await batch.commit();
                 }
                 
-                // 4. Generate embeddings and save chunks
+                // 4. Generate embeddings and save chunks with header propagation
+                let currentHeaders = "SI. Nature of Power | ED | G.M. | AGM | DGM | S.M.";
                 for (let i = 0; i < pagesText.length; i++) {
                     const pageText = pagesText[i].trim();
                     const pageNumber = i + 1;
@@ -141,6 +156,17 @@ db.collection("documents").where("status", "==", "Processing")
                     if (pageText.length < 10) {
                         console.log(`Skipping empty or tiny page ${pageNumber}.`);
                         continue;
+                    }
+
+                    // Dynamically scan for headers on this page
+                    const lines = pageText.split('\n');
+                    for (const line of lines) {
+                        const cleanLine = line.trim();
+                        if (cleanLine.includes('ED') && cleanLine.includes('G.M.') && cleanLine.includes('AGM') && cleanLine.includes('DGM')) {
+                            currentHeaders = cleanLine.replace(/\s+/g, ' ');
+                        } else if (cleanLine.includes('TC') && cleanLine.includes('Nomination') && cleanLine.includes('Approval')) {
+                            currentHeaders = cleanLine.replace(/\s+/g, ' ');
+                        }
                     }
                     
                     // Simple page segmentation: split long pages if > 1500 chars
@@ -161,10 +187,13 @@ db.collection("documents").where("status", "==", "Processing")
                     for (let j = 0; j < chunks.length; j++) {
                         const chunkText = chunks[j];
                         
-                        // Call OpenAI Embeddings API
+                        // Prepend headers context to text for embedding rich search and accurate LLM answering
+                        const prefixedText = `[Context - Document: ${docData.name} | Page: ${pageNumber} | Table Columns: ${currentHeaders}]\n${chunkText}`;
+
+                        // Call OpenAI Embeddings API with prefixed text
                         const embeddingResponse = await openai.embeddings.create({
                             model: "text-embedding-3-small",
-                            input: chunkText
+                            input: prefixedText
                         });
                         
                         const embedding = embeddingResponse.data[0].embedding;
@@ -174,7 +203,7 @@ db.collection("documents").where("status", "==", "Processing")
                             docId: docId,
                             docName: docData.name,
                             pageNumber: pageNumber,
-                            text: chunkText,
+                            text: prefixedText,
                             embedding: FieldValue.vector(embedding),
                             uploadDate: new Date()
                         });
@@ -188,6 +217,8 @@ db.collection("documents").where("status", "==", "Processing")
             } catch (err) {
                 console.error(`Error processing "${docData.name}":`, err);
                 await docRef.update({ status: "Error" });
+            } finally {
+                processingDocs.delete(docId);
             }
         });
     }, (error) => {
@@ -216,7 +247,7 @@ app.post('/ask', async (req, res) => {
         const query = db.collection("chunks").findNearest({
             vectorField: 'embedding',
             queryVector: queryEmbedding,
-            limit: 4,
+            limit: 6,
             distanceMeasure: 'COSINE'
         });
 
@@ -242,8 +273,9 @@ app.post('/ask', async (req, res) => {
         const topDoc = topChunks[0];
         const topVector = topDoc.embedding ? topDoc.embedding.toArray() : [];
         const highestSimilarity = topVector.length > 0 ? cosineSimilarity(queryEmbedding, topVector) : 0.99;
+        const confidencePercentage = scaleConfidence(highestSimilarity);
         
-        console.log(`Highest similarity match score: ${highestSimilarity}`);
+        console.log(`Highest similarity match score: ${highestSimilarity} -> scaled to confidence: ${confidencePercentage}%`);
         if (highestSimilarity < 0.25) {
             return res.json({
                 answer: "I couldn't find any relevant sections in the uploaded manuals to answer your question.",
@@ -263,10 +295,13 @@ app.post('/ask', async (req, res) => {
         const systemPrompt = `You are an expert AI assistant answering employee questions about company guidelines, manuals, rules, or circulars.
 Use ONLY the context blocks below to answer the user's question. 
 
+You must respond with a JSON object containing the following keys:
+- "answer": A clear, detailed, and professional answer based strictly on the context. If the answer cannot be found in the context, state "I cannot find the answer in the uploaded manuals."
+- "clause": The specific clause number, section number, title, or heading (e.g., "Clause 4.2", "Section II", "Annexure A", "Para 3.1") from the context that contains the answer. If no specific clause/section can be identified, write "General".
+
 Guidelines:
-- Provide a clear, detailed, and professional answer based strictly on the context.
-- If the answer cannot be found in the context, state "I cannot find the answer in the uploaded manuals."
-- Format the response in concise paragraphs.
+- Do not make up any clauses; only extract what is explicitly written in the context.
+- Format the answer in concise paragraphs.
 - Keep the language simple and helpful.`;
 
         const userPrompt = `Context:
@@ -274,7 +309,7 @@ ${contextText}
 
 Question: ${question}
 
-Answer:`;
+Answer JSON (containing "answer" and "clause" keys):`;
 
         // 6. Call OpenAI GPT-4o-mini to get response
         const completion = await openai.chat.completions.create({
@@ -283,10 +318,20 @@ Answer:`;
                 { role: "system", content: systemPrompt },
                 { role: "user", content: userPrompt }
             ],
+            response_format: { type: "json_object" },
             temperature: 0.2
         });
         
-        const answer = completion.choices[0].message.content;
+        let answer = "";
+        let clause = "General";
+        try {
+            const responseData = JSON.parse(completion.choices[0].message.content);
+            answer = responseData.answer;
+            clause = responseData.clause || "General";
+        } catch (jsonErr) {
+            console.error("Failed to parse GPT JSON response:", jsonErr);
+            answer = completion.choices[0].message.content;
+        }
         
         // Match details for the stats cards
         const primarySource = topChunks[0];
@@ -295,8 +340,8 @@ Answer:`;
             answer: answer,
             sourcePdf: primarySource.docName,
             pageNumber: primarySource.pageNumber.toString(),
-            confidence: `${Math.round(highestSimilarity * 100)}%`,
-            clause: "General" // Or parse headings if available in document structure
+            confidence: `${confidencePercentage}%`,
+            clause: clause
         });
         
     } catch (err) {
