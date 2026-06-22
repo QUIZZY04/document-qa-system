@@ -59,7 +59,7 @@ function scaleConfidence(similarity) {
 }
 
 
-// Custom page-by-page PDF parser using pdf-parse
+// Custom page-by-page PDF parser using smart Y-tolerance and X-sorting to preserve table alignments
 async function parsePdfPages(buffer) {
     let pagesText = [];
     
@@ -71,17 +71,47 @@ async function parsePdfPages(buffer) {
         
         return pageData.getTextContent(render_options)
             .then(function(textContent) {
-                let lastY, text = '';
-                for (let item of textContent.items) {
-                    if (lastY == item.transform[5] || !lastY) {
-                        text += item.str;
-                    } else {
-                        text += '\n' + item.str;
-                    }
-                    lastY = item.transform[5];
+                const items = textContent.items;
+                if (items.length === 0) {
+                    pagesText.push("");
+                    return "";
                 }
-                pagesText.push(text);
-                return text;
+                
+                // Group by Y coordinate with a tolerance of 4 units
+                const tolerance = 4;
+                let rows = [];
+                
+                for (let item of items) {
+                    const text = item.str;
+                    const x = item.transform[4];
+                    const y = item.transform[5];
+                    
+                    let foundRow = rows.find(r => Math.abs(r.y - y) <= tolerance);
+                    
+                    if (foundRow) {
+                        foundRow.items.push({ text, x, y });
+                    } else {
+                        rows.push({
+                            y: y,
+                            items: [{ text, x, y }]
+                        });
+                    }
+                }
+                
+                // Sort rows from top to bottom (Y coordinate in PDF is bottom-up, so higher Y is higher on page)
+                rows.sort((a, b) => b.y - a.y);
+                
+                // For each row, sort items from left to right (X coordinate)
+                let lines = [];
+                for (let row of rows) {
+                    row.items.sort((a, b) => a.x - b.x);
+                    const lineText = row.items.map(it => it.text).join(" ").replace(/\s+/g, " ");
+                    lines.push(lineText);
+                }
+                
+                const pageText = lines.join("\n");
+                pagesText.push(pageText);
+                return pageText;
             });
     }
 
@@ -300,6 +330,7 @@ You must respond with a JSON object containing the following keys:
 - "clause": The specific clause number, section number, title, or heading (e.g., "Clause 4.2", "Section II", "Annexure A", "Para 3.1") from the context that contains the answer. If no specific clause/section can be identified, write "General".
 
 Guidelines:
+- Define acronyms as: ED = Executive Director, GM = General Manager, AGM = Additional General Manager, DGM = Deputy General Manager, SM / S.M. = Senior Manager.
 - Do not make up any clauses; only extract what is explicitly written in the context.
 - Format the answer in concise paragraphs.
 - Keep the language simple and helpful.`;
