@@ -115,6 +115,8 @@ db.collection("documents").where("status", "==", "Processing")
                 }
                 
                 const [fileBuffer] = await fileRef.download();
+                console.log(`Downloaded file size: ${fileBuffer.length} bytes.`);
+                console.log(`File signature (first 10 chars): "${fileBuffer.slice(0, 10).toString()}"`);
                 
                 // 2. Parse PDF pages
                 const pagesText = await parsePdfPages(fileBuffer);
