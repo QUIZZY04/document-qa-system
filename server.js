@@ -102,6 +102,15 @@ db.collection("documents").where("status", "==", "Processing")
                 
                 const [exists] = await fileRef.exists();
                 if (!exists) {
+                    console.log(`File not found at: ${storagePath}`);
+                    try {
+                        const [files] = await bucket.getFiles({ prefix: `documents/${docId}/` });
+                        console.log(`Files under documents/${docId}/:`, files.map(f => f.name));
+                        const [allFiles] = await bucket.getFiles({ maxResults: 10 });
+                        console.log("First 10 files in bucket:", allFiles.map(f => f.name));
+                    } catch (bucketErr) {
+                        console.error("Failed to list bucket files:", bucketErr);
+                    }
                     throw new Error(`File not found in storage at path: ${storagePath}`);
                 }
                 
