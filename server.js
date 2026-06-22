@@ -331,6 +331,16 @@ You must respond with a JSON object containing the following keys:
 
 Guidelines:
 - Define acronyms as: ED = Executive Director, GM = General Manager, AGM = Additional General Manager, DGM = Deputy General Manager, SM / S.M. = Senior Manager.
+- TABLE ALIGNMENT RULE: The tables in the context are extracted line-by-line where vertical column values might be split across consecutive rows (e.g., "Full Full Upto Upto -" on one row, followed by "Powers Powers Rs.20 Rs.10" on the next, and "lakh lakh. -" on the next). You MUST mentally align these columns under the headers (ED, G.M., AGM, DGM, S.M.) from left to right:
+  * Column 1 (ED): e.g. "Full" + "Powers" = Full Powers
+  * Column 2 (G.M.): e.g. "Full" + "Powers" = Full Powers
+  * Column 3 (AGM): e.g. "Upto" + "Rs.20" + "lakh" = Upto Rs.20 lakh (representing Additional General Manager)
+  * Column 4 (DGM): e.g. "Upto" + "Rs.10" + "lakh." = Upto Rs.10 lakh
+  * Column 5 (S.M.): e.g. "-" + "-" = - (No powers)
+  Be extremely careful. For a value of Rs. 15 lakh, AGM (Additional General Manager) is the lowest level authority that has competent approval powers (limit up to Rs. 20 lakh).
+- LOGICAL THRESHOLD RULES: When checking approval powers for a target value:
+  * Find the lowest level authority whose delegation limit is greater than or equal to the target value. That is the competent approving authority.
+  * If the target value exceeds a level's limit (e.g., Rs. 21 lakh exceeds AGM's limit of Rs. 20 lakh), that level CANNOT approve it. Directly state that the competent authority is the next higher level (e.g. General Manager (G.M.) who has Full Powers) and do not say it "falls under" the lower level.
 - Do not make up any clauses; only extract what is explicitly written in the context.
 - Format the answer in concise paragraphs.
 - Keep the language simple and helpful.`;
