@@ -273,11 +273,16 @@ app.post('/ask', async (req, res) => {
         });
         const queryEmbedding = queryEmbeddingResponse.data[0].embedding;
         
-        // 2. Perform native vector search using findNearest
+        // Extract section/clause numbers (e.g. 4.1, 4.3)
+        const clauseRegex = /\b\d+\.\d+\b/g;
+        const clauseMatches = question.match(clauseRegex) || [];
+        console.log(`Extracted clause numbers from query:`, clauseMatches);
+
+        // 2. Perform native vector search using findNearest (expanded limit to 15 to allow reranking)
         const query = db.collection("chunks").findNearest({
             vectorField: 'embedding',
             queryVector: queryEmbedding,
-            limit: 6,
+            limit: 15,
             distanceMeasure: 'COSINE'
         });
 
@@ -292,17 +297,41 @@ app.post('/ask', async (req, res) => {
             });
         }
         
-        // 3. Build top chunks and compute cosine similarity of the top match for confidence scoring
-        let topChunks = [];
+        // 3. Build all chunks with cosine similarity and keyword boosting
+        let allChunks = [];
         chunksSnap.forEach((doc) => {
             const chunkData = doc.data();
-            topChunks.push(chunkData);
+            const vec = chunkData.embedding ? chunkData.embedding.toArray() : [];
+            const similarity = vec.length > 0 ? cosineSimilarity(queryEmbedding, vec) : 0;
+            
+            // Check if chunk text contains any of the clause numbers from the query
+            let isExactClauseMatch = false;
+            for (const clauseNum of clauseMatches) {
+                if (chunkData.text && chunkData.text.includes(clauseNum)) {
+                    isExactClauseMatch = true;
+                    break;
+                }
+            }
+            
+            // Apply keyword boosting to score
+            const boostedSimilarity = isExactClauseMatch ? similarity + 0.25 : similarity;
+            allChunks.push({
+                ...chunkData,
+                rawSimilarity: similarity,
+                boostedSimilarity: boostedSimilarity,
+                isExactClauseMatch: isExactClauseMatch
+            });
         });
+
+        // Sort chunks by boosted similarity score descending
+        allChunks.sort((a, b) => b.boostedSimilarity - a.boostedSimilarity);
+        
+        // Take the top 6 chunks for prompt context
+        let topChunks = allChunks.slice(0, 6);
 
         // Compute similarity of top result to display in confidence card
         const topDoc = topChunks[0];
-        const topVector = topDoc.embedding ? topDoc.embedding.toArray() : [];
-        const highestSimilarity = topVector.length > 0 ? cosineSimilarity(queryEmbedding, topVector) : 0.99;
+        const highestSimilarity = topDoc.rawSimilarity || 0.99;
         const confidencePercentage = scaleConfidence(highestSimilarity);
         
         console.log(`Highest similarity match score: ${highestSimilarity} -> scaled to confidence: ${confidencePercentage}%`);
@@ -352,9 +381,9 @@ Question: ${question}
 
 Answer JSON (containing "answer" and "clause" keys):`;
 
-        // 6. Call OpenAI GPT-4o-mini to get response
+        // 6. Call OpenAI GPT-4o to get response
         const completion = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
+            model: "gpt-4o",
             messages: [
                 { role: "system", content: systemPrompt },
                 { role: "user", content: userPrompt }
