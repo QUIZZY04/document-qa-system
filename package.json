@@ -1,0 +1,17 @@
+{
+  "name": "document-qa-backend",
+  "version": "1.0.0",
+  "description": "Local RAG server for Document QA System",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "firebase-admin": "^12.1.0",
+    "openai": "^4.51.0",
+    "pdf-parse": "^1.1.1"
+  }
+}

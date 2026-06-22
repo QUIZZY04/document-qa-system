@@ -363,7 +363,7 @@ import { auth, db } from './js/firebase-config.js';
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-auth.js";
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-firestore.js";
 
-window.askQuestion = function() {
+window.askQuestion = async function() {
     const question = document.getElementById("question").value;
 
     if(question.trim() === ""){
@@ -371,10 +371,52 @@ window.askQuestion = function() {
         return;
     }
 
-    document.getElementById("answer").innerHTML =
-        "Searching documents...";
+    const askBtn = document.querySelector(".ask-btn");
+    askBtn.disabled = true;
+    askBtn.textContent = "🔍 Searching...";
 
-    // OpenAI + Firebase integration will be added later
+    document.getElementById("answer").innerHTML = "Searching documents and generating answer...";
+    document.getElementById("sourcePdf").textContent = "-";
+    document.getElementById("pageNumber").textContent = "-";
+    document.getElementById("confidence").textContent = "-";
+    document.getElementById("clause").textContent = "-";
+    document.getElementById("citationText").innerHTML = "Searching...";
+
+    try {
+        const response = await fetch("http://localhost:5000/ask", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ question: question })
+        });
+
+        if (!response.ok) {
+            throw new Error(`Server returned error status: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        document.getElementById("answer").innerHTML = data.answer.replace(/\n/g, '<br>');
+        document.getElementById("sourcePdf").textContent = data.sourcePdf;
+        document.getElementById("pageNumber").textContent = data.pageNumber;
+        document.getElementById("confidence").textContent = data.confidence;
+        document.getElementById("clause").textContent = data.clause;
+
+        if (data.sourcePdf !== "-") {
+            document.getElementById("citationText").innerHTML = `Source reference: <strong>Page ${data.pageNumber}</strong> of <em>${data.sourcePdf}</em>`;
+        } else {
+            document.getElementById("citationText").innerHTML = "No citation available.";
+        }
+
+    } catch (err) {
+        console.error("QA query failed:", err);
+        document.getElementById("answer").innerHTML = `<span style="color: red;">Failed to retrieve answer: ${err.message}. Make sure your backend server is running on port 5000.</span>`;
+        document.getElementById("citationText").innerHTML = "Error occurred.";
+    } finally {
+        askBtn.disabled = false;
+        askBtn.textContent = "🔍 Ask Question";
+    }
 };
 
 onAuthStateChanged(auth, async (user) => {

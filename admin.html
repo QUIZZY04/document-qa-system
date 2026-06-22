@@ -370,9 +370,10 @@ Document Knowledge Assistant Admin Dashboard
 </div>
 
 <script type="module">
-import { auth, db } from './js/firebase-config.js';
+import { auth, db, storage } from './js/firebase-config.js';
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-auth.js";
-import { doc, getDoc } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-firestore.js";
+import { doc, getDoc, collection, addDoc, onSnapshot, query, orderBy, deleteDoc, updateDoc } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-firestore.js";
+import { ref, uploadBytesResumable, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-storage.js";
 
 // Check authentication and authorization
 onAuthStateChanged(auth, async (user) => {
@@ -407,16 +408,141 @@ onAuthStateChanged(auth, async (user) => {
     }
 });
 
-// Expose upload function globally
-window.uploadPDFs = function() {
-    const files = document.getElementById("pdfUpload").files;
+// Upload PDFs to Firebase Storage and Firestore
+window.uploadPDFs = async function() {
+    const fileInput = document.getElementById("pdfUpload");
+    const files = fileInput.files;
 
     if (files.length === 0) {
         alert("Please select at least one PDF.");
         return;
     }
 
-    alert(files.length + " PDF(s) selected.\nFirebase integration will be added next.");
+    const uploadBtn = document.querySelector(".upload-section .btn");
+    uploadBtn.disabled = true;
+    uploadBtn.textContent = "Uploading...";
+
+    for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        
+        try {
+            // 1. Create a metadata document in Firestore
+            const docRef = await addDoc(collection(db, "documents"), {
+                name: file.name,
+                pages: 0,
+                status: "Processing",
+                uploadDate: new Date(),
+                url: ""
+            });
+
+            // 2. Upload file to Firebase Storage under its unique doc ID path
+            const storageRef = ref(storage, `documents/${docRef.id}/${file.name}`);
+            const uploadTask = uploadBytesResumable(storageRef, file);
+
+            uploadTask.on('state_changed', 
+                (snapshot) => {
+                    const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+                    console.log(`Upload for ${file.name} is ${progress}% done`);
+                }, 
+                async (error) => {
+                    console.error("Upload failed for:", file.name, error);
+                    await updateDoc(docRef, { status: "Error" });
+                }, 
+                async () => {
+                    const downloadUrl = await getDownloadURL(uploadTask.snapshot.ref);
+                    // Update Firestore entry with download URL
+                    await updateDoc(docRef, {
+                        url: downloadUrl
+                    });
+                    console.log(`File ${file.name} uploaded successfully.`);
+                }
+            );
+        } catch (err) {
+            console.error("Failed to register document:", file.name, err);
+        }
+    }
+
+    fileInput.value = "";
+    uploadBtn.disabled = false;
+    uploadBtn.textContent = "Upload Documents";
+};
+
+// Listen for documents in real-time
+onSnapshot(query(collection(db, "documents"), orderBy("uploadDate", "desc")), (snapshot) => {
+    const tbody = document.getElementById("documentsTable");
+    const totalDocsEl = document.getElementById("totalDocs");
+    const indexedDocsEl = document.getElementById("indexedDocs");
+    
+    tbody.innerHTML = "";
+    let totalCount = snapshot.size;
+    let indexedCount = 0;
+    
+    if (totalDocsEl) totalDocsEl.textContent = totalCount;
+    
+    snapshot.forEach((docSnap) => {
+        const docData = docSnap.data();
+        const docId = docSnap.id;
+        
+        if (docData.status === "Indexed") {
+            indexedCount++;
+        }
+        
+        const dateStr = docData.uploadDate ? new Date(docData.uploadDate.seconds * 1000).toLocaleDateString() : '-';
+        const pagesStr = docData.pages || '-';
+        const statusClass = docData.status.toLowerCase();
+        
+        tbody.innerHTML += `
+            <tr id="row-${docId}">
+                <td>${docData.name}</td>
+                <td>${pagesStr}</td>
+                <td>${dateStr}</td>
+                <td><span class="status ${statusClass}">${docData.status}</span></td>
+                <td>
+                    <button class="action-btn reindex" onclick="reindexDoc('${docId}')">Reindex</button>
+                    <button class="action-btn delete" onclick="deleteDoc('${docId}', '${docData.name}')">Delete</button>
+                </td>
+            </tr>`;
+    });
+    
+    if (indexedDocsEl) indexedDocsEl.textContent = indexedCount;
+});
+
+// Delete Document from Firestore and Storage
+window.deleteDoc = async function(docId, fileName) {
+    if (!confirm(`Are you sure you want to delete "${fileName}"?`)) {
+        return;
+    }
+    
+    try {
+        // Delete document metadata from Firestore
+        await deleteDoc(doc(db, "documents", docId));
+        
+        // Try to delete the file from Storage under its unique path
+        try {
+            const storageRef = ref(storage, `documents/${docId}/${fileName}`);
+            await deleteObject(storageRef);
+        } catch (storageErr) {
+            console.warn("Storage deletion warning (file might not exist):", storageErr);
+        }
+        
+        alert(`"${fileName}" deleted successfully.`);
+    } catch (err) {
+        console.error("Deletion failed:", err);
+        alert(`Failed to delete document: ${err.message}`);
+    }
+};
+
+// Reindex Document
+window.reindexDoc = async function(docId) {
+    try {
+        await updateDoc(doc(db, "documents", docId), {
+            status: "Processing"
+        });
+        alert("Reindexing requested.");
+    } catch (err) {
+        console.error("Reindexing request failed:", err);
+        alert(`Failed to trigger reindexing: ${err.message}`);
+    }
 };
 </script>
 
