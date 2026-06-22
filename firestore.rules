@@ -14,7 +14,7 @@ service cloud.firestore {
       // Allow users to read their own admin document to check whitelist status; client-side write access is blocked
       allow read: if request.auth != null 
         && request.auth.token.email_verified == true 
-        && request.auth.token.email.toLowerCase() == email.toLowerCase();
+        && request.auth.token.email == email;
       allow write: if false; 
     }
 
