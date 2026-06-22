@@ -76,7 +76,7 @@ async function parsePdfPages(buffer) {
     }
 
     let options = {
-        pager: render_page
+        pagerender: render_page
     };
     
     await pdf(buffer, options);
