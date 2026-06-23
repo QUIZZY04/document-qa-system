@@ -90,12 +90,44 @@ function parseLimitToLakh(raw) {
 }
 
 function extractTargetAmountLakh(question) {
-    const q = question.replace(/,/g, '');
-    let m;
-    m = q.match(/rs\.?\s*(\d+)/i);
-    if (m) { const v = parseInt(m[1]); return v >= 10000 ? v / 100000 : v; }
-    m = q.match(/(\d+(?:\.\d+)?)\s*lakh/i);  if (m) return parseFloat(m[1]);
-    m = q.match(/(\d+(?:\.\d+)?)\s*crore/i); if (m) return parseFloat(m[1]) * 100;
+    const q = question.replace(/,/g, '').toLowerCase();
+    
+    const unitRegex = /(\d+(?:\.\d+)?)\s*(crore|cr|lakh|l)\b/gi;
+    let match;
+    unitRegex.lastIndex = 0;
+    if ((match = unitRegex.exec(q)) !== null) {
+        const val = parseFloat(match[1]);
+        const unit = match[2].toLowerCase();
+        if (unit.startsWith('c')) {
+            return val * 100;
+        } else if (unit.startsWith('l')) {
+            return val;
+        }
+    }
+    
+    const rsRegex = /rs\.?\s*(\d+(?:\.\d+)?)\b/gi;
+    rsRegex.lastIndex = 0;
+    if ((match = rsRegex.exec(q)) !== null) {
+        const val = parseFloat(match[1]);
+        if (val >= 10000) {
+            return val / 100000;
+        }
+        return val;
+    }
+    
+    let temp = q;
+    const clauseRegex = /\b\d+\.\d+\b/g;
+    temp = temp.replace(clauseRegex, '');
+    
+    const anyNumRegex = /\b(\d+(?:\.\d+)?)\b/g;
+    if ((match = anyNumRegex.exec(temp)) !== null) {
+        const val = parseFloat(match[1]);
+        if (val >= 10000) {
+            return val / 100000;
+        }
+        return val;
+    }
+    
     return null;
 }
 
