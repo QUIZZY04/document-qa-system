@@ -451,6 +451,61 @@ app.post('/ask', async (req, res) => {
         return res.status(400).json({ error: "Question cannot be empty." });
     }
     
+    // ── 0. Handle Greetings and Short Queries Conversational style ──
+    const lowerQ = question.trim().toLowerCase().replace(/[?,.]/g, '');
+    const isGreeting = /^(hi|hello|hey|good\s+morning|good\s+afternoon|good\s+evening|greetings|yo|help|sup)(\s+.*)?$/i.test(lowerQ);
+    if (isGreeting) {
+        try {
+            const completion = await openai.chat.completions.create({
+                model: 'gpt-4o',
+                messages: [
+                    {
+                        role: 'system',
+                        content: `You are a warm, friendly AI assistant for company policy documents.
+Your goal is to greet the user and offer options to help them get started.
+The uploaded document is 'DOP Sec II Revised march 2023.pdf', which covers Delegation of Powers (DOP) for purchases, contracts, stores & spares, etc.
+Respond in natural, friendly, conversational language. End your greeting by asking what they would like to search.
+Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
+                    },
+                    { role: 'user', content: question }
+                ],
+                response_format: { type: 'json_object' },
+                temperature: 0.7
+            });
+            const responseData = JSON.parse(completion.choices[0].message.content);
+            const answerText = responseData.answer + `\n\nHere are some options you can explore:
+<button class="chat-opt-btn" onclick="selectSuggestion('Who is approving authority under DOP clause 4.3 for Rs 2600000')">📊 Who is approving authority under DOP clause 4.3 for Rs 26 lakh?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause 4.1 for Rs 21 lakh')">💼 Who is approving authority under clause 4.1 for Rs 21 lakh?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('what does clause 4.3 cover?')">📖 What does clause 4.3 cover?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('what does ED stand for?')">🔍 What does ED stand for?</button>`;
+            return res.json({
+                answer: answerText,
+                sourcePdf: "-",
+                pageNumber: "-",
+                confidence: "100%",
+                clause: "Greeting"
+            });
+        } catch (err) {
+            console.error("GPT greeting helper error:", err);
+            // Fallback to static greeting
+            return res.json({
+                answer: `Hello! I am your Document AI Assistant. How can I help you today?
+
+Here are some options you can explore:
+<button class="chat-opt-btn" onclick="selectSuggestion('Who is approving authority under DOP clause 4.3 for Rs 2600000')">📊 Who is approving authority under DOP clause 4.3 for Rs 26 lakh?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause 4.1 for Rs 21 lakh')">💼 Who is approving authority under clause 4.1 for Rs 21 lakh?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('what does clause 4.3 cover?')">📖 What does clause 4.3 cover?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('what does ED stand for?')">🔍 What does ED stand for?</button>
+
+Feel free to click any of these options or ask your own question!`,
+                sourcePdf: "-",
+                pageNumber: "-",
+                confidence: "100%",
+                clause: "Greeting"
+            });
+        }
+    }
+    
     try {
         console.log(`Searching answers for query: "${question}"...`);
         
@@ -530,14 +585,55 @@ app.post('/ask', async (req, res) => {
         }
         
         console.log(`Top chunk: raw=${topDoc.rawSimilarity?.toFixed(4)}, boosted=${topDoc.boostedSimilarity?.toFixed(4)}, exactClauseMatch=${topDoc.isExactClauseMatch} -> confidence: ${confidencePercentage}%`);
+        
         if (highestSimilarity < 0.25) {
-            return res.json({
-                answer: "I couldn't find any relevant sections in the uploaded manuals to answer your question.",
-                sourcePdf: "-",
-                pageNumber: "-",
-                confidence: "Low",
-                clause: "-"
-            });
+            try {
+                const completion = await openai.chat.completions.create({
+                    model: 'gpt-4o',
+                    messages: [
+                        {
+                            role: 'system',
+                            content: `You are a helpful, conversational AI Assistant for company policy documents.
+The user's query could not be matched with high confidence to the uploaded delegation of power manuals.
+Your instructions:
+1. Explain politely that you couldn't find a direct answer in the uploaded manuals for their query.
+2. Formulate a friendly follow-up asking what they'd like to check instead.
+Format your response strictly as JSON: {"answer": "...", "clause": "-"}`
+                        },
+                        { role: 'user', content: question }
+                    ],
+                    response_format: { type: 'json_object' },
+                    temperature: 0.7
+                });
+                const responseData = JSON.parse(completion.choices[0].message.content);
+                const answerText = responseData.answer + `\n\nHere are some options you can explore:
+<button class="chat-opt-btn" onclick="selectSuggestion('Who is approving authority under DOP clause 4.3 for Rs 2600000')">📊 Who is approving authority under DOP clause 4.3 for Rs 26 lakh?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause 4.1 for Rs 21 lakh')">💼 Who is approving authority under clause 4.1 for Rs 21 lakh?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('what does clause 4.3 cover?')">📖 What does clause 4.3 cover?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('what does ED stand for?')">🔍 What does ED stand for?</button>`;
+                return res.json({
+                    answer: answerText,
+                    sourcePdf: "-",
+                    pageNumber: "-",
+                    confidence: "Low",
+                    clause: "-"
+                });
+            } catch (err) {
+                console.error("GPT low similarity helper error:", err);
+                return res.json({
+                    answer: `I couldn't find any relevant sections in the uploaded manuals to answer your question.
+
+Here are some options you can explore:
+<button class="chat-opt-btn" onclick="selectSuggestion('Who is approving authority under DOP clause 4.3 for Rs 2600000')">📊 Who is approving authority under DOP clause 4.3 for Rs 26 lakh?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause 4.1 for Rs 21 lakh')">💼 Who is approving authority under clause 4.1 for Rs 21 lakh?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('what does clause 4.3 cover?')">📖 What does clause 4.3 cover?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('what does ED stand for?')">🔍 What does ED stand for?</button>`,
+                    sourcePdf: "-",
+                    pageNumber: "-",
+                    confidence: "Low",
+                    clause: "-"
+                });
+            }
         }
         
         // ── 5. Deterministic authority resolution for DOP threshold queries ────
@@ -594,7 +690,7 @@ Instructions:
 1. Explain this to the user in a natural, friendly, and conversational style (general user language).
    Example layout:
    "Under Clause ${clauseNum} for ${clauseRow.Nature || 'Delegation of Powers'}, the competent approving authority is the ${authority.name}. They can approve values ${authority.limitText}. Since your requested amount of ${targetDisplay} is within their limit, they can approve it. Lower levels like ${lowerReasons ? lowerReasons : 'none'} do not have sufficient powers for this amount."
-2. ALWAYS end your response by asking the user a friendly, relevant follow-up question to engage and interact (e.g. asking if they want to verify who can approve a different amount for this clause, if they have queries about other clauses, or if they need help with approval details).
+2. ALWAYS end your response by asking the user a friendly, relevant follow-up question to engage and interact (e.g. asking if they want to check another amount, check another clause, or see definition details).
 3. Do not alter any numbers or authority names in your explanation.
 
 Answer JSON:`;
@@ -609,7 +705,7 @@ CRITICAL INSTRUCTIONS FOR 100% ACCURACY AND NO HALLUCINATIONS:
 4. Abbreviations: ED = Executive Director, GM = General Manager, AGM = Additional General Manager, DGM = Deputy General Manager, SM = Senior Manager.
 5. Format: Respond with JSON format strictly: {"answer": "...", "clause": "..."}. Fill "clause" with the specific clause number found (e.g. "Clause 3.1" or "Clause 4.3") or "General" if not specified.
 6. Tone: Keep the answer clear, user-friendly, and conversational (general user language) rather than dense legalese, while strictly preserving all numbers, names, and facts.
-7. Interaction: End your response by asking the user a friendly, contextual follow-up question related to their query to engage them (e.g. asking if they want to check another clause, need further detail on a related policy, or want to clarify any terms). If the answer was not found, ask if they want to ask about another document topic.`;
+7. Interaction: End your response by asking the user a friendly, contextual follow-up question related to their query to engage them.`;
 
             userPrompt = `Context:\n${contextText}\n\nQuestion: ${question}\n\nAnswer JSON:`;
         }
@@ -643,9 +739,42 @@ CRITICAL INSTRUCTIONS FOR 100% ACCURACY AND NO HALLUCINATIONS:
             "does not state", "not mention"
         ];
         const isNotFound = notFoundPatterns.some(pat => answer.toLowerCase().includes(pat));
+        
+        let buttonsHtml = "";
         if (isNotFound) {
             confidencePercentage = 0;
             clause = "-";
+            buttonsHtml = `\n\nHere are some options you can explore:
+<button class="chat-opt-btn" onclick="selectSuggestion('Who is approving authority under DOP clause 4.3 for Rs 2600000')">📊 Who is approving authority under DOP clause 4.3 for Rs 26 lakh?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause 4.1 for Rs 21 lakh')">💼 Who is approving authority under clause 4.1 for Rs 21 lakh?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('what does clause 4.3 cover?')">📖 What does clause 4.3 cover?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('what does ED stand for?')">🔍 What does ED stand for?</button>`;
+            answer = `I couldn't find the answer in the provided documents.` + buttonsHtml;
+        } else if (preComputedFact) {
+            // Append dynamic threshold options
+            const { clauseNum, targetLakh: tl } = preComputedFact;
+            let nextAmount = tl === 26 ? 21 : 26;
+            let otherClause = clauseNum === "4.3" ? "4.1" : "4.3";
+            buttonsHtml = `\n\n<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause ${clauseNum} for Rs ${nextAmount} lakh')">🔍 Check Rs ${nextAmount} lakh under Clause ${clauseNum}</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause ${otherClause} for Rs 21 lakh')">💼 Check Clause ${otherClause} for Rs 21 lakh</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('what does clause ${clauseNum} cover?')">📖 What does Clause ${clauseNum} cover?</button>`;
+            answer = answer + buttonsHtml;
+        } else {
+            // Append contextual follow-ups based on detected clause
+            let detectedClause = clauseMatches[0] || (clause !== "General" ? clause.replace("Clause ", "") : null);
+            if (detectedClause) {
+                let otherClause = detectedClause.includes("4.3") ? "4.1" : "4.3";
+                buttonsHtml = `\n\n<button class="chat-opt-btn" onclick="selectSuggestion('Who is approving authority under DOP clause ${detectedClause} for Rs 2600000')">📊 Who is approving authority under Clause ${detectedClause} for Rs 26 lakh?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause ${detectedClause} for Rs 2100000')">💼 Who is approving authority under Clause ${detectedClause} for Rs 21 lakh?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('what does clause ${otherClause} cover?')">📖 What does Clause ${otherClause} cover?</button>`;
+            } else {
+                buttonsHtml = `\n\nHere are some options you can explore:
+<button class="chat-opt-btn" onclick="selectSuggestion('Who is approving authority under DOP clause 4.3 for Rs 2600000')">📊 Who is approving authority under DOP clause 4.3 for Rs 26 lakh?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause 4.1 for Rs 21 lakh')">💼 Who is approving authority under clause 4.1 for Rs 21 lakh?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('what does clause 4.3 cover?')">📖 What does clause 4.3 cover?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('what does ED stand for?')">🔍 What does ED stand for?</button>`;
+            }
+            answer = answer + buttonsHtml;
         }
         
         // Match details for the stats cards
