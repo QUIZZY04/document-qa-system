@@ -1,4 +1,4 @@
-const question = "who is approving authority under DOP clause 4.3 for Rs 5100000";
+const question = "who is approving authority under clause 4.1 for Rs 2100000";
 
 async function query() {
     console.log(`Sending API request to http://localhost:5000/ask with query: "${question}"...`);

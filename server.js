@@ -59,7 +59,7 @@ function scaleConfidence(similarity) {
 }
 
 
-// Custom page-by-page PDF parser using smart Y-tolerance and X-sorting to preserve table alignments
+// Custom page-by-page PDF parser using column X-coordinate mapping and logical row merging
 async function parsePdfPages(buffer) {
     let pagesText = [];
     
@@ -77,39 +77,111 @@ async function parsePdfPages(buffer) {
                     return "";
                 }
                 
-                // Group by Y coordinate with a tolerance of 4 units
-                const tolerance = 4;
-                let rows = [];
+                // Group items into fine-grained lines first (tolerance of 3 units)
+                const yTolerance = 3;
+                let lines = [];
                 
                 for (let item of items) {
                     const text = item.str;
                     const x = item.transform[4];
                     const y = item.transform[5];
                     
-                    let foundRow = rows.find(r => Math.abs(r.y - y) <= tolerance);
-                    
-                    if (foundRow) {
-                        foundRow.items.push({ text, x, y });
+                    let foundLine = lines.find(l => Math.abs(l.y - y) <= yTolerance);
+                    if (foundLine) {
+                        foundLine.items.push({ text, x, y });
                     } else {
-                        rows.push({
-                            y: y,
-                            items: [{ text, x, y }]
-                        });
+                        lines.push({ y, items: [{ text, x, y }] });
                     }
                 }
                 
-                // Sort rows from top to bottom (Y coordinate in PDF is bottom-up, so higher Y is higher on page)
-                rows.sort((a, b) => b.y - a.y);
+                // Sort lines from top to bottom (Y descending)
+                lines.sort((a, b) => b.y - a.y);
                 
-                // For each row, sort items from left to right (X coordinate)
-                let lines = [];
-                for (let row of rows) {
-                    row.items.sort((a, b) => a.x - b.x);
-                    const lineText = row.items.map(it => it.text).join(" ").replace(/\s+/g, " ");
-                    lines.push(lineText);
+                // Merge lines into logical table rows based on the presence of first column text (X < 100)
+                let rows = [];
+                let currentRow = null;
+                
+                for (let line of lines) {
+                    line.items.sort((a, b) => a.x - b.x);
+                    const hasFirstCol = line.items.some(it => it.x < 100);
+                    
+                    if (hasFirstCol || !currentRow) {
+                        currentRow = {
+                            y: line.y,
+                            items: [...line.items]
+                        };
+                        rows.push(currentRow);
+                    } else {
+                        currentRow.items.push(...line.items);
+                    }
                 }
                 
-                const pageText = lines.join("\n");
+                let outputLines = [];
+                for (let row of rows) {
+                    if (row.items.length < 3) {
+                        row.items.sort((a, b) => a.x - b.x);
+                        const lineText = row.items.map(it => it.text).join(" ").trim();
+                        if (lineText) outputLines.push(lineText);
+                        continue;
+                    }
+                    
+                    let colSI = [];
+                    let colNature = [];
+                    let colED = [];
+                    let colGM = [];
+                    let colAGM = [];
+                    let colDGM = [];
+                    let colSM = [];
+                    
+                    for (let it of row.items) {
+                        const x = it.x;
+                        if (x < 100) {
+                            colSI.push(it);
+                        } else if (x >= 100 && x < 270) {
+                            colNature.push(it);
+                        } else if (x >= 270 && x < 320) {
+                            colED.push(it);
+                        } else if (x >= 320 && x < 366) {
+                            colGM.push(it);
+                        } else if (x >= 366 && x < 421) {
+                            colAGM.push(it);
+                        } else if (x >= 421 && x < 471) {
+                            colDGM.push(it);
+                        } else {
+                            colSM.push(it);
+                        }
+                    }
+                    
+                    const formatCol = (colItems) => {
+                        colItems.sort((a, b) => {
+                            if (Math.abs(a.y - b.y) > 2) return b.y - a.y; // top-to-bottom
+                            return a.x - b.x; // left-to-right
+                        });
+                        return colItems.map(it => it.text).join(" ").replace(/\s+/g, " ").trim();
+                    };
+                    
+                    const si = formatCol(colSI);
+                    const nature = formatCol(colNature);
+                    const ed = formatCol(colED);
+                    const gm = formatCol(colGM);
+                    const agm = formatCol(colAGM);
+                    const dgm = formatCol(colDGM);
+                    const sm = formatCol(colSM);
+                    
+                    if (si || nature || ed || gm || agm || dgm || sm) {
+                        let parts = [];
+                        if (si) parts.push(`[SI: ${si}]`);
+                        if (nature) parts.push(`[Nature of Power: ${nature}]`);
+                        if (ed) parts.push(`[ED: ${ed}]`);
+                        if (gm) parts.push(`[GM: ${gm}]`);
+                        if (agm) parts.push(`[AGM: ${agm}]`);
+                        if (dgm) parts.push(`[DGM: ${dgm}]`);
+                        if (sm) parts.push(`[SM: ${sm}]`);
+                        outputLines.push(parts.join(" | "));
+                    }
+                }
+                
+                const pageText = outputLines.join("\n");
                 pagesText.push(pageText);
                 return pageText;
             });
@@ -278,11 +350,11 @@ app.post('/ask', async (req, res) => {
         const clauseMatches = question.match(clauseRegex) || [];
         console.log(`Extracted clause numbers from query:`, clauseMatches);
 
-        // 2. Perform native vector search using findNearest (expanded limit to 15 to allow reranking)
+        // 2. Perform native vector search using findNearest (expanded limit to 150 to allow reranking)
         const query = db.collection("chunks").findNearest({
             vectorField: 'embedding',
             queryVector: queryEmbedding,
-            limit: 15,
+            limit: 150,
             distanceMeasure: 'COSINE'
         });
 
