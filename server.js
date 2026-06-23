@@ -607,10 +607,11 @@ Feel free to click any of these options or ask your own question!`,
                         {
                             role: 'system',
                             content: `You are a helpful, conversational AI Assistant for company policy documents.
-The user's query could not be matched with high confidence to the uploaded delegation of power manuals.
+The user is either asking a general conversational query (e.g. "are you correct?", "who are you?", "thank you"), or asking something that could not be matched with high confidence to the uploaded manuals.
 Your instructions:
-1. Explain politely that you couldn't find a direct answer in the uploaded manuals for their query.
-2. Formulate a friendly follow-up asking what they'd like to check instead.
+1. If the user is asking a general question about yourself, your capabilities, your accuracy, or giving general feedback/greetings, reply naturally, politely, and conversationally (like ChatGPT). Explain how you work (grounded in the policy manuals using vector search and deterministic limit checks) but answer their immediate query directly.
+2. If the user is asking an entirely off-topic query (e.g. recipes, general coding, unrelated trivia), politely explain that you are specialized in the uploaded policy manuals and cannot answer that, then guide them back.
+3. Formulate a friendly follow-up asking what they'd like to check.
 Format your response strictly as JSON: {"answer": "...", "clause": "-"}`
                         },
                         { role: 'user', content: question }
