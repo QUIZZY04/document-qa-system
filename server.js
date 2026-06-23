@@ -68,10 +68,18 @@ function scaleConfidence(similarity) {
 function parseLimitToLakh(raw) {
     if (!raw) return 0;
     let s = raw.toString().toUpperCase()
-        .replace(/RS\.?\s*/g, '').replace(/UPTO\s*/g, '').replace(/,/g, '').trim();
+        .replace(/RS\.?\s*/g, '').replace(/UPTO\s*/g, '').replace(/,/g, '')
+        .replace(/[.]+$/, '')   // strip trailing period(s)
+        .trim();
     if (!s || s === '-' || s === 'NIL') return 0;
     if (s.includes('FULL') || s.includes('POWER')) return Infinity;
-    s = s.replace(/(\d)[O]/gi, '$10').replace(/[O](\d)/gi, '0$1');
+    // OCR corrections: letter O → 0, letter S before O or digit → 5
+    s = s.replace(/\bSO\b/g, '50')   // "SO" → "50" (most common: Rs.SO lakh)
+         .replace(/\bS(\d)/g, '5$1') // "S<digit>" → "5<digit>"
+         .replace(/(\d)[O]/gi, '$10') // digit-O → digit-0
+         .replace(/[O](\d)/gi, '0$1') // O-digit → 0-digit
+         .replace(/[O]\b/g, '0');     // trailing O → 0
+    // Normalise unit words
     s = s.replace(/LAKHSH?|1AKH|LAKH/gi, 'LAKH').replace(/CRORE|CR\b/gi, 'CRORE')
          .replace(/\s+/g, ' ').trim();
     let m;
@@ -500,116 +508,80 @@ app.post('/ask', async (req, res) => {
             });
         }
         
-        // 5. Construct Prompt with context chunks
-        let contextText = "";
+        // ── 5. Deterministic authority resolution for DOP threshold queries ────
+        // Extract clause + amount from question. If found, resolve authority IN CODE.
+        let preComputedFact = null;
+        const targetLakh = extractTargetAmountLakh(question);
+        if (clauseMatches.length > 0 && targetLakh !== null) {
+            const clauseNum = clauseMatches[0];
+            const clauseRow = extractClauseRow(topChunks, clauseNum);
+            if (clauseRow) {
+                const authority = resolveAuthority(clauseRow, targetLakh);
+                const limitTable = AUTHORITY_ORDER
+                    .filter(k => clauseRow[k])
+                    .map(k => `${AUTHORITY_NAMES[k]}: ${clauseRow[k]}`)
+                    .join(' | ');
+                preComputedFact = { clauseNum, targetLakh, authority, clauseRow, limitTable };
+                console.log(`[RESOLVE] Clause ${clauseNum}, target=${targetLakh}L → ${authority.name} (${authority.limitText})`);
+            }
+        }
+
+        // ── 6. Build context text ─────────────────────────────────────────────
+        let contextText = '';
         topChunks.forEach((chunk, index) => {
             contextText += `\n--- Context block ${index + 1} (Source: ${chunk.docName}, Page: ${chunk.pageNumber}) ---\n${chunk.text}\n`;
         });
-        
-        const systemPrompt = `You are a precise AI assistant answering questions about a company's Delegation of Powers (DOP) document.
-Use ONLY the context blocks provided. Respond with a JSON object with two keys: "answer" and "clause".
 
-## ACRONYM DEFINITIONS (always use these expansions)
-- ED  = Executive Director
-- GM  = General Manager  
-- AGM = Additional General Manager  (NOT Assistant General Manager)
-- DGM = Deputy General Manager
-- SM / S.M. = Senior Manager
+        let systemPrompt, userPrompt;
 
-## COLUMN STRUCTURE
-Each context row is formatted as:
-  [SI: <clause>] | [Nature of Power: <description>] | [ED: <ED_limit>] | [GM: <GM_limit>] | [AGM: <AGM_limit>] | [DGM: <DGM_limit>] | [SM: <SM_limit>]
-The label inside [ED: ...] is the Executive Director's delegation limit for that row.
-The label inside [GM: ...] is the General Manager's limit. And so on.
+        if (preComputedFact) {
+            // ── FAST PATH: authority computed deterministically, LLM only formats ──
+            const { clauseNum, targetLakh: tl, authority, clauseRow, limitTable } = preComputedFact;
+            const targetDisplay = tl >= 100
+                ? `Rs. ${(tl / 100).toFixed(tl % 100 === 0 ? 0 : 2)} crore`
+                : `Rs. ${tl} lakh`;
 
-## OCR CORRECTION RULES
-The PDF was scanned. Common OCR errors you MUST correct before comparing:
-- "Rs.SO lakh" or "Rs.5O lakh" → read as "Rs. 50 lakh"
-- "501akh" or "50lakh" → "50 lakh"
-- "201akh" → "20 lakh"
-- "61akh" → "6 lakh"
-- "1 Cr" or "1Cr" → "Rs. 1 crore"
-Always mentally correct these before doing any numerical comparison.
+            // Build a clear breakdown of why lower levels cannot approve
+            const lowerLevels = AUTHORITY_ORDER.slice(0, AUTHORITY_ORDER.indexOf(authority.key));
+            const lowerReasons = lowerLevels
+                .filter(k => clauseRow[k] && parseLimitToLakh(clauseRow[k]) < tl)
+                .map(k => `${AUTHORITY_NAMES[k]} (limit: ${clauseRow[k]})`)
+                .join(', ');
 
-## UNIT CONVERSION (use these to compare amounts)
-- 1 crore = 100 lakh = Rs. 1,00,00,000
-- So "Rs. 2 crore" = Rs. 200 lakh = Rs. 2,00,00,000
-- And "Rs. 50 lakh" = Rs. 50,00,000
+            systemPrompt = `You are a formal document assistant. Write a professional answer using ONLY the facts provided. Do NOT change any number, amount, or authority name. Respond with JSON: {"answer": "...", "clause": "Clause ${clauseNum}"}`;
 
-## CLAUSE SPECIFICITY RULE
-When the user asks about a specific clause (e.g. "Clause 4.3"), you MUST:
-1. Find the row where [SI:] starts with that clause number.
-2. Read ONLY the limits from that exact row.
-3. IGNORE limits from any other clause row, even if they appear nearby.
+            userPrompt = `VERIFIED FACTS (computed from the DOP document — do not alter):
+- Clause: ${clauseNum} — ${clauseRow.Nature || 'Delegation of Powers'}
+- Query amount: ${targetDisplay} (Rs. ${Math.round(tl * 100000).toLocaleString('en-IN')})
+- Delegation limits for Clause ${clauseNum}: ${limitTable}
+- COMPETENT AUTHORITY: ${authority.name}
+- Their limit: ${authority.limitText}
+${lowerReasons ? `- Cannot approve: ${lowerReasons}` : ''}
 
-## APPROVAL AUTHORITY ALGORITHM
-Given a target amount, find the LOWEST authority level whose limit >= target amount.
-Follow these steps IN ORDER (lowest authority first → highest authority last):
+Write 2 clear sentences:
+1. State the competent authority (${authority.name}) and their delegation limit for Clause ${clauseNum}.
+2. Briefly explain why (e.g. "${targetDisplay} is within ${authority.name}'s limit of ${authority.limitText}").
 
-Step 1: Check SM limit. If target <= SM_limit → SM is the authority. STOP.
-Step 2: Check DGM limit. If SM_limit < target <= DGM_limit → DGM is the authority. STOP.
-Step 3: Check AGM limit. If DGM_limit < target <= AGM_limit → AGM is the authority. STOP.
-Step 4: Check GM limit. If AGM_limit < target <= GM_limit → GM is the authority. STOP.
-Step 5: If target <= ED limit → ED is the authority.
-Step 6: If "Full Powers" appears for a level, it means that level has no upper cap — they can approve any amount.
+Answer JSON:`;
 
-IMPORTANT: "Full Powers" means UNLIMITED authority for that level.
-When both GM and ED have "Full Powers", GM is the authority for amounts that exceed AGM's limit (since GM is a lower level than ED).
+        } else {
+            // ── GENERAL PATH: use full context for non-threshold questions ────
+            systemPrompt = `You are an expert AI assistant for company policy documents.
+Use ONLY the context blocks provided. Respond with JSON: {"answer": "...", "clause": "..."}.
+- ED=Executive Director, GM=General Manager, AGM=Additional General Manager, DGM=Deputy General Manager, SM=Senior Manager.
+- Answer clearly and professionally.`;
 
-## WORKED EXAMPLES
-Example A — Clause 4.3, Rs. 21 lakh (Rs. 21,00,000):
-  SM limit = Rs. 10 lakh. 21 > 10 → SM cannot approve.
-  DGM limit = Rs. 50 lakh (correct "Rs.SO" OCR). 21 <= 50 → DGM can approve. ✓
-  Answer: DGM (Deputy General Manager).
+            userPrompt = `Context:\n${contextText}\n\nQuestion: ${question}\n\nAnswer JSON:`;
+        }
 
-Example B — Clause 4.3, Rs. 51 lakh (Rs. 51,00,000):
-  SM limit = Rs. 10 lakh. 51 > 10 → SM cannot approve.
-  DGM limit = Rs. 50 lakh. 51 > 50 → DGM cannot approve.
-  AGM limit = Rs. 2 crore = 200 lakh. 51 <= 200 → AGM can approve. ✓
-  Answer: AGM (Additional General Manager).
-
-Example C — Clause 4.1, Rs. 15 lakh:
-  DGM limit = Rs. 10 lakh. 15 > 10 → DGM cannot approve.
-  AGM limit = Rs. 20 lakh. 15 <= 20 → AGM can approve. ✓
-  Answer: AGM (Additional General Manager).
-
-Example D — Clause 4.1, Rs. 21 lakh:
-  DGM limit = Rs. 10 lakh. 21 > 10 → cannot.
-  AGM limit = Rs. 20 lakh. 21 > 20 → AGM cannot approve.
-  GM has Full Powers. → GM can approve. ✓
-  Answer: GM (General Manager).
-
-Example E — Clause 3.2, Rs. 21 lakh:
-  SM limit = Rs. 10 lakh. 21 > 10 → cannot.
-  DGM limit = Rs. 20 lakh. 21 > 20 → DGM cannot approve.
-  AGM limit = Rs. 50 lakh. 21 <= 50 → AGM can approve. ✓
-  Answer: AGM (Additional General Manager).
-
-Example F — Clause 3.2, Rs. 25 lakh:
-  SM limit = Rs. 10 lakh. 25 > 10 → cannot.
-  DGM limit = Rs. 20 lakh. 25 > 20 → cannot.
-  AGM limit = Rs. 50 lakh. 25 <= 50 → AGM can approve. ✓
-  Answer: AGM (Additional General Manager).
-
-## OUTPUT FORMAT
-- "answer": A clear, professional answer naming the competent authority and their limit. Show your comparison reasoning briefly (e.g., "Rs. 21 lakh exceeds DGM's Rs. 20 lakh limit, but is within AGM's Rs. 50 lakh limit").
-- "clause": The exact clause number (e.g., "Clause 4.3").`;
-
-        const userPrompt = `Context:
-${contextText}
-
-Question: ${question}
-
-Answer JSON (containing "answer" and "clause" keys):`;
-
-        // 6. Call OpenAI GPT-4o to get response
+        // ── 7. Call OpenAI GPT-4o ─────────────────────────────────────────────
         const completion = await openai.chat.completions.create({
-            model: "gpt-4o",
+            model: 'gpt-4o',
             messages: [
-                { role: "system", content: systemPrompt },
-                { role: "user", content: userPrompt }
+                { role: 'system', content: systemPrompt },
+                { role: 'user',   content: userPrompt }
             ],
-            response_format: { type: "json_object" },
+            response_format: { type: 'json_object' },
             temperature: 0
         });
         
