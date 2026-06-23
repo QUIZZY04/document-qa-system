@@ -580,9 +580,9 @@ app.post('/ask', async (req, res) => {
                 .map(k => `${AUTHORITY_NAMES[k]} (limit: ${clauseRow[k]})`)
                 .join(', ');
 
-            systemPrompt = `You are a formal document assistant. Write a professional answer using ONLY the facts provided. Do NOT change any number, amount, or authority name. Respond with JSON: {"answer": "...", "clause": "Clause ${clauseNum}"}`;
+            systemPrompt = `You are a helpful, conversational document assistant. Write a warm, professional, and clear answer in natural user-friendly language using ONLY the facts provided. Do NOT alter any name, limit, or amount. Respond with JSON: {"answer": "...", "clause": "Clause ${clauseNum}"}`;
 
-            userPrompt = `VERIFIED FACTS (computed from the DOP document — do not alter):
+            userPrompt = `VERIFIED FACTS:
 - Clause: ${clauseNum} — ${clauseRow.Nature || 'Delegation of Powers'}
 - Query amount: ${targetDisplay} (Rs. ${Math.round(tl * 100000).toLocaleString('en-IN')})
 - Delegation limits for Clause ${clauseNum}: ${limitTable}
@@ -590,18 +590,23 @@ app.post('/ask', async (req, res) => {
 - Their limit: ${authority.limitText}
 ${lowerReasons ? `- Cannot approve: ${lowerReasons}` : ''}
 
-Write 2 clear sentences:
-1. State the competent authority (${authority.name}) and their delegation limit for Clause ${clauseNum}.
-2. Briefly explain why (e.g. "${targetDisplay} is within ${authority.name}'s limit of ${authority.limitText}").
+Explain this to the user in a natural, friendly, and conversational style (general user language). E.g.
+"Under Clause ${clauseNum} for ${clauseRow.Nature || 'Delegation of Powers'}, the competent approving authority is the ${authority.name}. They can approve values ${authority.limitText}. Since your requested amount of ${targetDisplay} is within their limit, they can approve it. Lower levels like ${lowerReasons ? lowerReasons : 'none'} do not have sufficient powers for this amount."
+
+Make it sound conversational, helpful, and natural, but ensure all names and numbers are strictly identical to the facts.
 
 Answer JSON:`;
 
         } else {
             // ── GENERAL PATH: use full context for non-threshold questions ────
             systemPrompt = `You are an expert AI assistant for company policy documents.
-Use ONLY the context blocks provided. Respond with JSON: {"answer": "...", "clause": "..."}.
-- ED=Executive Director, GM=General Manager, AGM=Additional General Manager, DGM=Deputy General Manager, SM=Senior Manager.
-- Answer clearly and professionally.`;
+CRITICAL INSTRUCTIONS FOR 100% ACCURACY AND NO HALLUCINATIONS:
+1. Grounding: Answer the question using ONLY the facts explicitly stated in the provided context blocks. Do not assume, extrapolate, or bring in outside information.
+2. No Hallucinations: If the context blocks do not contain the answer, or if there is insufficient information to answer the question with absolute certainty, respond with: "I couldn't find the answer in the provided documents."
+3. Exact Match: Do not alter any clause numbers, numbers, amounts, percentages, names, or quotes. They must be copied exactly from the context if mentioned in the answer.
+4. Abbreviations: ED = Executive Director, GM = General Manager, AGM = Additional General Manager, DGM = Deputy General Manager, SM = Senior Manager.
+5. Format: Respond with JSON format strictly: {"answer": "...", "clause": "..."}. Fill "clause" with the specific clause number found (e.g. "Clause 3.1" or "Clause 4.3") or "General" if not specified.
+6. Tone: Keep the answer clear, user-friendly, and conversational (general user language) rather than dense legalese, while strictly preserving all numbers, names, and facts.`;
 
             userPrompt = `Context:\n${contextText}\n\nQuestion: ${question}\n\nAnswer JSON:`;
         }
@@ -627,15 +632,27 @@ Use ONLY the context blocks provided. Respond with JSON: {"answer": "...", "clau
             console.error("Failed to parse GPT JSON response:", jsonErr);
             answer = completion.choices[0].message.content;
         }
+
+        // If the answer indicates information is not found, force confidence to Low (0%)
+        const notFoundPatterns = [
+            "couldn't find", "could not find", "cannot find", 
+            "not found", "no information", "insufficient information", 
+            "does not state", "not mention"
+        ];
+        const isNotFound = notFoundPatterns.some(pat => answer.toLowerCase().includes(pat));
+        if (isNotFound) {
+            confidencePercentage = 0;
+            clause = "-";
+        }
         
         // Match details for the stats cards
         const primarySource = topChunks[0];
         
         res.json({
             answer: answer,
-            sourcePdf: primarySource.docName,
-            pageNumber: primarySource.pageNumber.toString(),
-            confidence: `${confidencePercentage}%`,
+            sourcePdf: isNotFound ? "-" : primarySource.docName,
+            pageNumber: isNotFound ? "-" : primarySource.pageNumber.toString(),
+            confidence: isNotFound ? "Low" : `${confidencePercentage}%`,
             clause: clause
         });
         
