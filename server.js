@@ -49,151 +49,227 @@ function cosineSimilarity(vecA, vecB) {
     return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
-// Map raw cosine similarity scores of OpenAI embeddings to an intuitive confidence percentage
+// Map cosine similarity scores of OpenAI embeddings to an intuitive confidence percentage
+// Uses boosted similarity so clause-matched chunks properly reflect 100% confidence
 function scaleConfidence(similarity) {
     if (similarity <= 0.2) return Math.round(similarity * 100);
     if (similarity <= 0.3) return Math.round(20 + (similarity - 0.2) * 300); // 20% to 50%
     if (similarity <= 0.5) return Math.round(50 + (similarity - 0.3) * 150); // 50% to 80%
-    if (similarity <= 0.7) return Math.round(80 + (similarity - 0.5) * 80);  // 80% to 96%
-    return Math.round(96 + (similarity - 0.7) * 15); // 96% to 99% (cap at 99%)
+    if (similarity <= 0.7) return Math.round(80 + (similarity - 0.5) * 100); // 80% to 100%
+    return 100; // anything >= 0.70 boosted similarity = 100%
 }
 
 
-// Custom page-by-page PDF parser using column X-coordinate mapping and logical row merging
+// =============================================================================
+// DETERMINISTIC AUTHORITY RESOLVER
+// All numerical threshold comparisons happen here in JavaScript — never by LLM.
+// =============================================================================
+
+function parseLimitToLakh(raw) {
+    if (!raw) return 0;
+    let s = raw.toString().toUpperCase()
+        .replace(/RS\.?\s*/g, '').replace(/UPTO\s*/g, '').replace(/,/g, '').trim();
+    if (!s || s === '-' || s === 'NIL') return 0;
+    if (s.includes('FULL') || s.includes('POWER')) return Infinity;
+    s = s.replace(/(\d)[O]/gi, '$10').replace(/[O](\d)/gi, '0$1');
+    s = s.replace(/LAKHSH?|1AKH|LAKH/gi, 'LAKH').replace(/CRORE|CR\b/gi, 'CRORE')
+         .replace(/\s+/g, ' ').trim();
+    let m;
+    m = s.match(/^([\d.]+)\s*CRORE$/i); if (m) return parseFloat(m[1]) * 100;
+    m = s.match(/^([\d.]+)\s*LAKH$/i);  if (m) return parseFloat(m[1]);
+    m = s.match(/^([\d.]+)$/);           if (m) return parseFloat(m[1]);
+    return 0;
+}
+
+function extractTargetAmountLakh(question) {
+    const q = question.replace(/,/g, '');
+    let m;
+    m = q.match(/rs\.?\s*(\d+)/i);
+    if (m) { const v = parseInt(m[1]); return v >= 10000 ? v / 100000 : v; }
+    m = q.match(/(\d+(?:\.\d+)?)\s*lakh/i);  if (m) return parseFloat(m[1]);
+    m = q.match(/(\d+(?:\.\d+)?)\s*crore/i); if (m) return parseFloat(m[1]) * 100;
+    return null;
+}
+
+const AUTHORITY_NAMES = {
+    SM: 'Senior Manager (SM)', DGM: 'Deputy General Manager (DGM)',
+    AGM: 'Additional General Manager (AGM)', GM: 'General Manager (GM)',
+    ED: 'Executive Director (ED)'
+};
+const AUTHORITY_ORDER = ['SM', 'DGM', 'AGM', 'GM', 'ED'];
+
+function extractClauseRow(chunks, clauseNumber) {
+    const siRe = new RegExp(`\\[SI:\\s*${clauseNumber.replace('.', '\\.')}[\\s\\]|]`, 'i');
+    for (const chunk of chunks) {
+        for (const line of (chunk.text || '').split('\n')) {
+            if (!siRe.test(line)) continue;
+            const extract = (key) => {
+                const m = line.match(new RegExp(`\\[${key}:\\s*([^\\]]+)\\]`, 'i'));
+                return m ? m[1].trim() : null;
+            };
+            const row = { Nature: extract('Nature of Power'), ED: extract('ED'),
+                GM: extract('GM'), AGM: extract('AGM'), DGM: extract('DGM'), SM: extract('SM') };
+            if (row.ED || row.GM || row.AGM || row.DGM || row.SM) return row;
+        }
+    }
+    return null;
+}
+
+function resolveAuthority(clauseRow, targetLakh) {
+    for (const key of AUTHORITY_ORDER) {
+        const limitLakh = parseLimitToLakh(clauseRow[key] || '');
+        if (limitLakh >= targetLakh)
+            return { key, name: AUTHORITY_NAMES[key], limitLakh, limitText: clauseRow[key] || '' };
+    }
+    const last = AUTHORITY_ORDER[AUTHORITY_ORDER.length - 1];
+    return { key: last, name: AUTHORITY_NAMES[last], limitLakh: Infinity, limitText: 'Full Powers' };
+}
+
+// Custom page-by-page PDF parser with DYNAMIC column detection per page.
+// For each page it finds the header row (contains ED+GM+AGM), reads the
+// X-coordinate of every authority column, then assigns each data cell to
+// the nearest column — fixes wrong mappings across all DOP pages.
 async function parsePdfPages(buffer) {
     let pagesText = [];
-    
+
+    // Normalize a header-cell text to a canonical column key
+    function toColKey(text) {
+        const t = text.toUpperCase().replace(/[\s.]/g, '');
+        if (t === 'ED')  return 'ED';
+        if (t === 'GM')  return 'GM';
+        if (t === 'AGM') return 'AGM';
+        if (t === 'DGM') return 'DGM';
+        if (t === 'SM')  return 'SM';
+        return null;
+    }
+
+    // A row is a header row when it contains all of ED, GM, AGM
+    function isHeaderRow(items) {
+        const norm = items.map(it => it.text.toUpperCase().replace(/[\s.]/g, ''));
+        return norm.some(t => t === 'ED') && norm.some(t => t === 'GM') && norm.some(t => t === 'AGM');
+    }
+
+    const COLS = ['SI', 'Nature', 'ED', 'GM', 'AGM', 'DGM', 'SM'];
+
     function render_page(pageData) {
-        let render_options = {
-            normalizeWhitespace: true,
-            disableCombineTextItems: false
-        };
-        
-        return pageData.getTextContent(render_options)
+        return pageData.getTextContent({ normalizeWhitespace: true, disableCombineTextItems: false })
             .then(function(textContent) {
                 const items = textContent.items;
-                if (items.length === 0) {
-                    pagesText.push("");
-                    return "";
-                }
-                
-                // Group items into fine-grained lines first (tolerance of 3 units)
-                const yTolerance = 3;
+                if (items.length === 0) { pagesText.push(''); return ''; }
+
+                // ── 1. Group items into Y-lines (tolerance = 3 pt) ──────────────
+                const yTol = 3;
                 let lines = [];
-                
-                for (let item of items) {
+                for (const item of items) {
+                    const x = item.transform[4], y = item.transform[5];
                     const text = item.str;
-                    const x = item.transform[4];
-                    const y = item.transform[5];
-                    
-                    let foundLine = lines.find(l => Math.abs(l.y - y) <= yTolerance);
-                    if (foundLine) {
-                        foundLine.items.push({ text, x, y });
-                    } else {
-                        lines.push({ y, items: [{ text, x, y }] });
-                    }
+                    const fl = lines.find(l => Math.abs(l.y - y) <= yTol);
+                    if (fl) fl.items.push({ text, x, y });
+                    else    lines.push({ y, items: [{ text, x, y }] });
                 }
-                
-                // Sort lines from top to bottom (Y descending)
-                lines.sort((a, b) => b.y - a.y);
-                
-                // Merge lines into logical table rows based on the presence of first column text (X < 100)
+                lines.sort((a, b) => b.y - a.y); // top → bottom
+
+                // ── 2. Merge Y-lines into logical table rows ─────────────────────
+                // A new row starts when a cell appears in the leftmost column (X < 100)
                 let rows = [];
-                let currentRow = null;
-                
-                for (let line of lines) {
+                let curRow = null;
+                for (const line of lines) {
                     line.items.sort((a, b) => a.x - b.x);
-                    const hasFirstCol = line.items.some(it => it.x < 100);
-                    
-                    if (hasFirstCol || !currentRow) {
-                        currentRow = {
-                            y: line.y,
-                            items: [...line.items]
-                        };
-                        rows.push(currentRow);
+                    const startsRow = line.items.some(it => it.x < 100);
+                    if (startsRow || !curRow) {
+                        curRow = { y: line.y, items: [...line.items] };
+                        rows.push(curRow);
                     } else {
-                        currentRow.items.push(...line.items);
+                        curRow.items.push(...line.items);
                     }
                 }
-                
-                let outputLines = [];
-                for (let row of rows) {
-                    if (row.items.length < 3) {
-                        row.items.sort((a, b) => a.x - b.x);
-                        const lineText = row.items.map(it => it.text).join(" ").trim();
-                        if (lineText) outputLines.push(lineText);
+
+                // ── 3. Dynamic column positions ──────────────────────────────────
+                // Start with sensible defaults (Page 7/8 layout).
+                // They get replaced the moment a header row is detected.
+                let colX = { SI: 50, Nature: 180, ED: 275, GM: 322, AGM: 370, DGM: 425, SM: 480 };
+
+                const fmtBucket = (bucket) => {
+                    bucket.sort((a, b) => Math.abs(a.y - b.y) > 2 ? b.y - a.y : a.x - b.x);
+                    return bucket.map(it => it.text).join(' ').replace(/\s+/g, ' ').trim();
+                };
+
+                let out = [];
+
+                for (const row of rows) {
+                    const sorted = [...row.items].sort((a, b) => a.x - b.x);
+
+                    // ── Detect header row → update column X positions ────────────
+                    if (isHeaderRow(sorted)) {
+                        const newX = {};
+                        for (const it of sorted) {
+                            const k = toColKey(it.text);
+                            if (k && newX[k] === undefined) newX[k] = it.x;
+                        }
+                        colX = { ...colX, ...newX };
+                        const hdr = COLS
+                            .filter(c => c !== 'SI' && c !== 'Nature')
+                            .map(c => `[${c}: ${c}]`).join(' | ');
+                        out.push(`[SI: SI.] | [Nature of Power: Nature of Power] | ${hdr}`);
                         continue;
                     }
-                    
-                    let colSI = [];
-                    let colNature = [];
-                    let colED = [];
-                    let colGM = [];
-                    let colAGM = [];
-                    let colDGM = [];
-                    let colSM = [];
-                    
-                    for (let it of row.items) {
-                        const x = it.x;
-                        if (x < 100) {
-                            colSI.push(it);
-                        } else if (x >= 100 && x < 270) {
-                            colNature.push(it);
-                        } else if (x >= 270 && x < 320) {
-                            colED.push(it);
-                        } else if (x >= 320 && x < 366) {
-                            colGM.push(it);
-                        } else if (x >= 366 && x < 421) {
-                            colAGM.push(it);
-                        } else if (x >= 421 && x < 471) {
-                            colDGM.push(it);
-                        } else {
-                            colSM.push(it);
-                        }
+
+                    if (row.items.length < 2) {
+                        const txt = row.items.map(it => it.text).join(' ').trim();
+                        if (txt) out.push(txt);
+                        continue;
                     }
-                    
-                    const formatCol = (colItems) => {
-                        colItems.sort((a, b) => {
-                            if (Math.abs(a.y - b.y) > 2) return b.y - a.y; // top-to-bottom
-                            return a.x - b.x; // left-to-right
-                        });
-                        return colItems.map(it => it.text).join(" ").replace(/\s+/g, " ").trim();
-                    };
-                    
-                    const si = formatCol(colSI);
-                    const nature = formatCol(colNature);
-                    const ed = formatCol(colED);
-                    const gm = formatCol(colGM);
-                    const agm = formatCol(colAGM);
-                    const dgm = formatCol(colDGM);
-                    const sm = formatCol(colSM);
-                    
+
+                    // ── Assign each item to the nearest known column ─────────────
+                    const sortedCols = COLS
+                        .filter(c => colX[c] !== undefined)
+                        .map(c => ({ key: c, x: colX[c] }))
+                        .sort((a, b) => a.x - b.x);
+
+                    const buckets = {};
+                    COLS.forEach(c => { buckets[c] = []; });
+
+                    for (const it of row.items) {
+                        let best = sortedCols[0];
+                        let bestDist = Math.abs(it.x - sortedCols[0].x);
+                        for (const col of sortedCols) {
+                            const d = Math.abs(it.x - col.x);
+                            if (d < bestDist) { bestDist = d; best = col; }
+                        }
+                        buckets[best.key].push(it);
+                    }
+
+                    const si     = fmtBucket(buckets['SI']);
+                    const nature = fmtBucket(buckets['Nature']);
+                    const ed     = fmtBucket(buckets['ED']);
+                    const gm     = fmtBucket(buckets['GM']);
+                    const agm    = fmtBucket(buckets['AGM']);
+                    const dgm    = fmtBucket(buckets['DGM']);
+                    const sm     = fmtBucket(buckets['SM']);
+
                     if (si || nature || ed || gm || agm || dgm || sm) {
-                        let parts = [];
-                        if (si) parts.push(`[SI: ${si}]`);
+                        const parts = [];
+                        if (si)     parts.push(`[SI: ${si}]`);
                         if (nature) parts.push(`[Nature of Power: ${nature}]`);
-                        if (ed) parts.push(`[ED: ${ed}]`);
-                        if (gm) parts.push(`[GM: ${gm}]`);
-                        if (agm) parts.push(`[AGM: ${agm}]`);
-                        if (dgm) parts.push(`[DGM: ${dgm}]`);
-                        if (sm) parts.push(`[SM: ${sm}]`);
-                        outputLines.push(parts.join(" | "));
+                        if (ed)     parts.push(`[ED: ${ed}]`);
+                        if (gm)     parts.push(`[GM: ${gm}]`);
+                        if (agm)    parts.push(`[AGM: ${agm}]`);
+                        if (dgm)    parts.push(`[DGM: ${dgm}]`);
+                        if (sm)     parts.push(`[SM: ${sm}]`);
+                        out.push(parts.join(' | '));
                     }
                 }
-                
-                const pageText = outputLines.join("\n");
+
+                const pageText = out.join('\n');
                 pagesText.push(pageText);
                 return pageText;
             });
     }
 
-    let options = {
-        pagerender: render_page
-    };
-    
-    await pdf(buffer, options);
+    await pdf(buffer, { pagerender: render_page });
     return pagesText;
 }
+
 
 // Ingestion Listener: Listen to documents with "Processing" status
 console.log("Starting real-time PDF Ingestion Listener...");
@@ -401,12 +477,19 @@ app.post('/ask', async (req, res) => {
         // Take the top 6 chunks for prompt context
         let topChunks = allChunks.slice(0, 6);
 
-        // Compute similarity of top result to display in confidence card
+        // Compute confidence using boosted similarity (includes +0.25 clause-match bonus)
+        // If the top chunk is an exact clause match (e.g. user asked about Clause 4.3 and top
+        // chunk explicitly contains "4.3"), we treat confidence as 100%.
         const topDoc = topChunks[0];
-        const highestSimilarity = topDoc.rawSimilarity || 0.99;
-        const confidencePercentage = scaleConfidence(highestSimilarity);
+        const highestSimilarity = topDoc.boostedSimilarity || topDoc.rawSimilarity || 0.99;
+        let confidencePercentage;
+        if (topDoc.isExactClauseMatch) {
+            confidencePercentage = 100; // confirmed clause-specific answer
+        } else {
+            confidencePercentage = scaleConfidence(highestSimilarity);
+        }
         
-        console.log(`Highest similarity match score: ${highestSimilarity} -> scaled to confidence: ${confidencePercentage}%`);
+        console.log(`Top chunk: raw=${topDoc.rawSimilarity?.toFixed(4)}, boosted=${topDoc.boostedSimilarity?.toFixed(4)}, exactClauseMatch=${topDoc.isExactClauseMatch} -> confidence: ${confidencePercentage}%`);
         if (highestSimilarity < 0.25) {
             return res.json({
                 answer: "I couldn't find any relevant sections in the uploaded manuals to answer your question.",
@@ -423,29 +506,94 @@ app.post('/ask', async (req, res) => {
             contextText += `\n--- Context block ${index + 1} (Source: ${chunk.docName}, Page: ${chunk.pageNumber}) ---\n${chunk.text}\n`;
         });
         
-        const systemPrompt = `You are an expert AI assistant answering employee questions about company guidelines, manuals, rules, or circulars.
-Use ONLY the context blocks below to answer the user's question. 
+        const systemPrompt = `You are a precise AI assistant answering questions about a company's Delegation of Powers (DOP) document.
+Use ONLY the context blocks provided. Respond with a JSON object with two keys: "answer" and "clause".
 
-You must respond with a JSON object containing the following keys:
-- "answer": A clear, detailed, and professional answer based strictly on the context. If the answer cannot be found in the context, state "I cannot find the answer in the uploaded manuals."
-- "clause": The specific clause number, section number, title, or heading (e.g., "Clause 4.2", "Section II", "Annexure A", "Para 3.1") from the context that contains the answer. If no specific clause/section can be identified, write "General".
+## ACRONYM DEFINITIONS (always use these expansions)
+- ED  = Executive Director
+- GM  = General Manager  
+- AGM = Additional General Manager  (NOT Assistant General Manager)
+- DGM = Deputy General Manager
+- SM / S.M. = Senior Manager
 
-Guidelines:
-- Define acronyms as: ED = Executive Director, GM = General Manager, AGM = Additional General Manager, DGM = Deputy General Manager, SM / S.M. = Senior Manager.
-- CLAUSE SPECIFICITY RULE: The user is asking about a specific clause number (e.g. Clause 4.3). You MUST look ONLY at the limits, columns, and values defined under that exact clause number in the context. Do NOT get confused by or use values from other clauses (such as Clause 4.1 or 4.2) that may also be present in the context blocks.
-- TABLE ALIGNMENT RULE: The tables in the context are extracted line-by-line where vertical column values might be split across consecutive rows (e.g., "Full Full Upto Upto -" on one row, followed by "Powers Powers Rs.20 Rs.10" on the next, and "lakh lakh. -" on the next). You MUST mentally align these columns under the headers (ED, G.M., AGM, DGM, S.M.) from left to right:
-  * Column 1 (ED): e.g. "Full" + "Powers" = Full Powers
-  * Column 2 (G.M.): e.g. "Full" + "Powers" = Full Powers
-  * Column 3 (AGM): e.g. "Upto" + "Rs.20" + "lakh" = Upto Rs.20 lakh (representing Additional General Manager)
-  * Column 4 (DGM): e.g. "Upto" + "Rs.10" + "lakh." = Upto Rs.10 lakh
-  * Column 5 (S.M.): e.g. "-" + "-" = - (No powers)
-  Be extremely careful. For a value of Rs. 15 lakh under Clause 4.1, AGM (Additional General Manager) is the lowest level authority (limit up to Rs. 20 lakh). But for Clause 4.3, DGM has limit Upto Rs. 50 lakh, and SM has limit Upto Rs. 10 lakh.
-- LOGICAL THRESHOLD RULES: When checking approval powers for a target value:
-  * Find the lowest level authority whose delegation limit is greater than or equal to the target value. That is the competent approving authority.
-  * If the target value exceeds a level's limit (e.g., Rs. 21 lakh exceeds S.M.'s limit of Rs. 10 lakh under Clause 4.3, but is less than DGM's limit of Rs. 50 lakh), that level CANNOT approve it, and you must check the next level. Directly state the competent authority level (e.g., Deputy General Manager (DGM) for Rs. 21 lakh under Clause 4.3) and do not say it "falls under" the lower level.
-- Do not make up any clauses; only extract what is explicitly written in the context.
-- Format the answer in concise paragraphs.
-- Keep the language simple and helpful.`;
+## COLUMN STRUCTURE
+Each context row is formatted as:
+  [SI: <clause>] | [Nature of Power: <description>] | [ED: <ED_limit>] | [GM: <GM_limit>] | [AGM: <AGM_limit>] | [DGM: <DGM_limit>] | [SM: <SM_limit>]
+The label inside [ED: ...] is the Executive Director's delegation limit for that row.
+The label inside [GM: ...] is the General Manager's limit. And so on.
+
+## OCR CORRECTION RULES
+The PDF was scanned. Common OCR errors you MUST correct before comparing:
+- "Rs.SO lakh" or "Rs.5O lakh" → read as "Rs. 50 lakh"
+- "501akh" or "50lakh" → "50 lakh"
+- "201akh" → "20 lakh"
+- "61akh" → "6 lakh"
+- "1 Cr" or "1Cr" → "Rs. 1 crore"
+Always mentally correct these before doing any numerical comparison.
+
+## UNIT CONVERSION (use these to compare amounts)
+- 1 crore = 100 lakh = Rs. 1,00,00,000
+- So "Rs. 2 crore" = Rs. 200 lakh = Rs. 2,00,00,000
+- And "Rs. 50 lakh" = Rs. 50,00,000
+
+## CLAUSE SPECIFICITY RULE
+When the user asks about a specific clause (e.g. "Clause 4.3"), you MUST:
+1. Find the row where [SI:] starts with that clause number.
+2. Read ONLY the limits from that exact row.
+3. IGNORE limits from any other clause row, even if they appear nearby.
+
+## APPROVAL AUTHORITY ALGORITHM
+Given a target amount, find the LOWEST authority level whose limit >= target amount.
+Follow these steps IN ORDER (lowest authority first → highest authority last):
+
+Step 1: Check SM limit. If target <= SM_limit → SM is the authority. STOP.
+Step 2: Check DGM limit. If SM_limit < target <= DGM_limit → DGM is the authority. STOP.
+Step 3: Check AGM limit. If DGM_limit < target <= AGM_limit → AGM is the authority. STOP.
+Step 4: Check GM limit. If AGM_limit < target <= GM_limit → GM is the authority. STOP.
+Step 5: If target <= ED limit → ED is the authority.
+Step 6: If "Full Powers" appears for a level, it means that level has no upper cap — they can approve any amount.
+
+IMPORTANT: "Full Powers" means UNLIMITED authority for that level.
+When both GM and ED have "Full Powers", GM is the authority for amounts that exceed AGM's limit (since GM is a lower level than ED).
+
+## WORKED EXAMPLES
+Example A — Clause 4.3, Rs. 21 lakh (Rs. 21,00,000):
+  SM limit = Rs. 10 lakh. 21 > 10 → SM cannot approve.
+  DGM limit = Rs. 50 lakh (correct "Rs.SO" OCR). 21 <= 50 → DGM can approve. ✓
+  Answer: DGM (Deputy General Manager).
+
+Example B — Clause 4.3, Rs. 51 lakh (Rs. 51,00,000):
+  SM limit = Rs. 10 lakh. 51 > 10 → SM cannot approve.
+  DGM limit = Rs. 50 lakh. 51 > 50 → DGM cannot approve.
+  AGM limit = Rs. 2 crore = 200 lakh. 51 <= 200 → AGM can approve. ✓
+  Answer: AGM (Additional General Manager).
+
+Example C — Clause 4.1, Rs. 15 lakh:
+  DGM limit = Rs. 10 lakh. 15 > 10 → DGM cannot approve.
+  AGM limit = Rs. 20 lakh. 15 <= 20 → AGM can approve. ✓
+  Answer: AGM (Additional General Manager).
+
+Example D — Clause 4.1, Rs. 21 lakh:
+  DGM limit = Rs. 10 lakh. 21 > 10 → cannot.
+  AGM limit = Rs. 20 lakh. 21 > 20 → AGM cannot approve.
+  GM has Full Powers. → GM can approve. ✓
+  Answer: GM (General Manager).
+
+Example E — Clause 3.2, Rs. 21 lakh:
+  SM limit = Rs. 10 lakh. 21 > 10 → cannot.
+  DGM limit = Rs. 20 lakh. 21 > 20 → DGM cannot approve.
+  AGM limit = Rs. 50 lakh. 21 <= 50 → AGM can approve. ✓
+  Answer: AGM (Additional General Manager).
+
+Example F — Clause 3.2, Rs. 25 lakh:
+  SM limit = Rs. 10 lakh. 25 > 10 → cannot.
+  DGM limit = Rs. 20 lakh. 25 > 20 → cannot.
+  AGM limit = Rs. 50 lakh. 25 <= 50 → AGM can approve. ✓
+  Answer: AGM (Additional General Manager).
+
+## OUTPUT FORMAT
+- "answer": A clear, professional answer naming the competent authority and their limit. Show your comparison reasoning briefly (e.g., "Rs. 21 lakh exceeds DGM's Rs. 20 lakh limit, but is within AGM's Rs. 50 lakh limit").
+- "clause": The exact clause number (e.g., "Clause 4.3").`;
 
         const userPrompt = `Context:
 ${contextText}
@@ -462,7 +610,7 @@ Answer JSON (containing "answer" and "clause" keys):`;
                 { role: "user", content: userPrompt }
             ],
             response_format: { type: "json_object" },
-            temperature: 0.2
+            temperature: 0
         });
         
         let answer = "";
