@@ -580,7 +580,7 @@ app.post('/ask', async (req, res) => {
                 .map(k => `${AUTHORITY_NAMES[k]} (limit: ${clauseRow[k]})`)
                 .join(', ');
 
-            systemPrompt = `You are a helpful, conversational document assistant. Write a warm, professional, and clear answer in natural user-friendly language using ONLY the facts provided. Do NOT alter any name, limit, or amount. Respond with JSON: {"answer": "...", "clause": "Clause ${clauseNum}"}`;
+            systemPrompt = `You are a helpful, conversational document assistant. Write a warm, friendly, and clear answer in natural user-friendly language using ONLY the facts provided. Do NOT alter any name, limit, or amount. Respond with JSON: {"answer": "...", "clause": "Clause ${clauseNum}"}`;
 
             userPrompt = `VERIFIED FACTS:
 - Clause: ${clauseNum} — ${clauseRow.Nature || 'Delegation of Powers'}
@@ -590,10 +590,12 @@ app.post('/ask', async (req, res) => {
 - Their limit: ${authority.limitText}
 ${lowerReasons ? `- Cannot approve: ${lowerReasons}` : ''}
 
-Explain this to the user in a natural, friendly, and conversational style (general user language). E.g.
-"Under Clause ${clauseNum} for ${clauseRow.Nature || 'Delegation of Powers'}, the competent approving authority is the ${authority.name}. They can approve values ${authority.limitText}. Since your requested amount of ${targetDisplay} is within their limit, they can approve it. Lower levels like ${lowerReasons ? lowerReasons : 'none'} do not have sufficient powers for this amount."
-
-Make it sound conversational, helpful, and natural, but ensure all names and numbers are strictly identical to the facts.
+Instructions:
+1. Explain this to the user in a natural, friendly, and conversational style (general user language).
+   Example layout:
+   "Under Clause ${clauseNum} for ${clauseRow.Nature || 'Delegation of Powers'}, the competent approving authority is the ${authority.name}. They can approve values ${authority.limitText}. Since your requested amount of ${targetDisplay} is within their limit, they can approve it. Lower levels like ${lowerReasons ? lowerReasons : 'none'} do not have sufficient powers for this amount."
+2. ALWAYS end your response by asking the user a friendly, relevant follow-up question to engage and interact (e.g. asking if they want to verify who can approve a different amount for this clause, if they have queries about other clauses, or if they need help with approval details).
+3. Do not alter any numbers or authority names in your explanation.
 
 Answer JSON:`;
 
@@ -606,7 +608,8 @@ CRITICAL INSTRUCTIONS FOR 100% ACCURACY AND NO HALLUCINATIONS:
 3. Exact Match: Do not alter any clause numbers, numbers, amounts, percentages, names, or quotes. They must be copied exactly from the context if mentioned in the answer.
 4. Abbreviations: ED = Executive Director, GM = General Manager, AGM = Additional General Manager, DGM = Deputy General Manager, SM = Senior Manager.
 5. Format: Respond with JSON format strictly: {"answer": "...", "clause": "..."}. Fill "clause" with the specific clause number found (e.g. "Clause 3.1" or "Clause 4.3") or "General" if not specified.
-6. Tone: Keep the answer clear, user-friendly, and conversational (general user language) rather than dense legalese, while strictly preserving all numbers, names, and facts.`;
+6. Tone: Keep the answer clear, user-friendly, and conversational (general user language) rather than dense legalese, while strictly preserving all numbers, names, and facts.
+7. Interaction: End your response by asking the user a friendly, contextual follow-up question related to their query to engage them (e.g. asking if they want to check another clause, need further detail on a related policy, or want to clarify any terms). If the answer was not found, ask if they want to ask about another document topic.`;
 
             userPrompt = `Context:\n${contextText}\n\nQuestion: ${question}\n\nAnswer JSON:`;
         }
