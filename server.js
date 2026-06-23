@@ -516,9 +516,17 @@ Feel free to click any of these options or ask your own question!`,
         });
         const queryEmbedding = queryEmbeddingResponse.data[0].embedding;
         
-        // Extract section/clause numbers (e.g. 4.1, 4.3)
-        const clauseRegex = /\b\d+\.\d+\b/g;
-        const clauseMatches = question.match(clauseRegex) || [];
+        // Extract section/clause numbers (decimals like 4.3, 4.1 or integers like 19, 15 preceded by clause indicators)
+        const clauseRegex = /(\b\d+\.\d+\b)|(?:\b(?:clause|cl|section|si|item|s\.no|no\.?|number)\s+(\d+)(?!\.\d)\b)/gi;
+        let clauseMatches = [];
+        let match;
+        while ((match = clauseRegex.exec(question)) !== null) {
+            if (match[1]) {
+                clauseMatches.push(match[1]); // e.g. "4.3"
+            } else if (match[2]) {
+                clauseMatches.push(match[2]); // e.g. "19"
+            }
+        }
         console.log(`Extracted clause numbers from query:`, clauseMatches);
 
         // 2. Perform native vector search using findNearest (expanded limit to 150 to allow reranking)
@@ -547,17 +555,22 @@ Feel free to click any of these options or ask your own question!`,
             const vec = chunkData.embedding ? chunkData.embedding.toArray() : [];
             const similarity = vec.length > 0 ? cosineSimilarity(queryEmbedding, vec) : 0;
             
-            // Check if chunk text contains any of the clause numbers from the query
+            // Check if chunk text contains any of the clause numbers from the query in a clause prefix format
             let isExactClauseMatch = false;
             for (const clauseNum of clauseMatches) {
-                if (chunkData.text && chunkData.text.includes(clauseNum)) {
-                    isExactClauseMatch = true;
-                    break;
+                if (chunkData.text) {
+                    const cleanText = chunkData.text;
+                    const siRegex = new RegExp(`\\[SI:\\s*${clauseNum.replace('.', '\\.')}[\\s\\].(]`, 'i');
+                    const wordRegex = new RegExp(`\\b${clauseNum.replace('.', '\\.')}\\.\\b`, 'i');
+                    if (siRegex.test(cleanText) || wordRegex.test(cleanText)) {
+                        isExactClauseMatch = true;
+                        break;
+                    }
                 }
             }
             
             // Apply keyword boosting to score
-            const boostedSimilarity = isExactClauseMatch ? similarity + 0.25 : similarity;
+            const boostedSimilarity = isExactClauseMatch ? similarity + 0.35 : similarity;
             allChunks.push({
                 ...chunkData,
                 rawSimilarity: similarity,
@@ -569,8 +582,8 @@ Feel free to click any of these options or ask your own question!`,
         // Sort chunks by boosted similarity score descending
         allChunks.sort((a, b) => b.boostedSimilarity - a.boostedSimilarity);
         
-        // Take the top 6 chunks for prompt context
-        let topChunks = allChunks.slice(0, 6);
+        // Take the top 15 chunks for prompt context (provides broader coverage of tables/remarks)
+        let topChunks = allChunks.slice(0, 15);
 
         // Compute confidence using boosted similarity (includes +0.25 clause-match bonus)
         // If the top chunk is an exact clause match (e.g. user asked about Clause 4.3 and top
@@ -696,7 +709,6 @@ Instructions:
 Answer JSON:`;
 
         } else {
-            // ── GENERAL PATH: use full context for non-threshold questions ────
             systemPrompt = `You are an expert AI assistant for company policy documents.
 CRITICAL INSTRUCTIONS FOR 100% ACCURACY AND NO HALLUCINATIONS:
 1. Grounding: Answer the question using ONLY the facts explicitly stated in the provided context blocks. Do not assume, extrapolate, or bring in outside information.
@@ -705,7 +717,8 @@ CRITICAL INSTRUCTIONS FOR 100% ACCURACY AND NO HALLUCINATIONS:
 4. Abbreviations: ED = Executive Director, GM = General Manager, AGM = Additional General Manager, DGM = Deputy General Manager, SM = Senior Manager.
 5. Format: Respond with JSON format strictly: {"answer": "...", "clause": "..."}. Fill "clause" with the specific clause number found (e.g. "Clause 3.1" or "Clause 4.3") or "General" if not specified.
 6. Tone: Keep the answer clear, user-friendly, and conversational (general user language) rather than dense legalese, while strictly preserving all numbers, names, and facts.
-7. Interaction: End your response by asking the user a friendly, contextual follow-up question related to their query to engage them.`;
+7. Interaction: End your response by asking the user a friendly, contextual follow-up question related to their query to engage them.
+8. Parent/Sub-Clauses: If the user asks about a parent clause (e.g. Clause 20, Clause 17, Clause 18, Clause 4) and the context contains its sub-clauses (e.g. 20.1, 20.2, 17.1, 4.3), treat the sub-clauses as part of the query and summarize/list their limits and details as the answer. Do not say you couldn't find the answer.`;
 
             userPrompt = `Context:\n${contextText}\n\nQuestion: ${question}\n\nAnswer JSON:`;
         }

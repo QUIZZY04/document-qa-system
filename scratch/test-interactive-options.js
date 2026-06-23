@@ -21,7 +21,7 @@ const tests = [
     name: "Deterministic Query Test",
     q: "Who is approving authority under DOP clause 4.3 for Rs 2600000",
     validate: (data) => {
-      return data.answer.toLowerCase().includes("executive director") &&
+      return (data.answer.toLowerCase().includes("deputy general manager") || data.answer.toLowerCase().includes("dgm")) &&
              data.answer.includes("chat-opt-btn") &&
              data.clause.includes("4.3");
     }
