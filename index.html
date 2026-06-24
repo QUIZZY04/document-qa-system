@@ -435,6 +435,9 @@ body{
         <div class="chat-header">
             <h2>🤖 Document AI Assistant</h2>
             <p>Grounded in your uploaded policy manuals and circulars</p>
+            <p style="margin-top: 5px; font-size: 11.5px; color: var(--muted);">
+                Backend Server: <a href="#" id="backend-settings-link" style="color: var(--primary); text-decoration: underline; font-weight: 600; cursor: pointer;">http://127.0.0.1:5000</a>
+            </p>
         </div>
 
         <!-- Chat History Area -->
@@ -486,6 +489,25 @@ import { auth, db } from './js/firebase-config.js';
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-auth.js";
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-firestore.js";
 
+// Setup dynamic backend URL settings
+const currentBackend = localStorage.getItem('backendUrl') || 'http://127.0.0.1:5000';
+const backendSettingsLink = document.getElementById("backend-settings-link");
+if (backendSettingsLink) {
+    backendSettingsLink.textContent = currentBackend;
+    backendSettingsLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        const newUrl = prompt("Enter Backend Server URL (e.g. http://192.168.1.15:5000 or your public Render URL):", currentBackend);
+        if (newUrl) {
+            let formattedUrl = newUrl.trim();
+            if (formattedUrl.endsWith('/')) {
+                formattedUrl = formattedUrl.slice(0, -1);
+            }
+            localStorage.setItem('backendUrl', formattedUrl);
+            window.location.reload();
+        }
+    });
+}
+
 window.askQuestion = async function() {
     const questionInput = document.getElementById("question");
     const question = questionInput.value.trim();
@@ -532,7 +554,8 @@ window.askQuestion = async function() {
     sendBtn.disabled = true;
 
     try {
-        const response = await fetch("http://127.0.0.1:5000/ask", {
+        const backendUrl = localStorage.getItem('backendUrl') || 'http://127.0.0.1:5000';
+        const response = await fetch(`${backendUrl}/ask`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"
@@ -567,9 +590,13 @@ window.askQuestion = async function() {
 
     } catch (err) {
         console.error("QA query failed:", err);
+        const currentBackend = localStorage.getItem('backendUrl') || 'http://127.0.0.1:5000';
         assistantMsg.innerHTML = `
             <div class="msg-content" style="color: red;">
-                Failed to retrieve answer: ${err.message}. Make sure your backend server is running on port 5000.
+                Failed to retrieve answer: ${err.message}.<br><br>
+                <strong>Troubleshooting:</strong><br>
+                1. Make sure your backend server is running.<br>
+                2. If you are accessing this from a mobile phone or another system, click the <strong>Backend Server</strong> link at the top to configure your PC's IP address (current: <code>${currentBackend}</code>).
             </div>
         `;
     } finally {
