@@ -924,6 +924,6 @@ db.collection("documents").onSnapshot((snapshot) => {
 
 // Start Server
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`RAG backend server is listening on port ${PORT}...`);
 });
