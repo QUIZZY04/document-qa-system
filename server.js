@@ -13,6 +13,20 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Serve specific static frontend assets to prevent exposing backend secrets like .env, service-account.json, etc.
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+app.get('/index.html', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+app.get('/admin.html', (req, res) => {
+    res.sendFile(path.join(__dirname, 'admin.html'));
+});
+app.use('/js', express.static(path.join(__dirname, 'js')));
+app.use('/document-qa-system-main', express.static(path.join(__dirname, 'document-qa-system-main')));
+
+
 // Initialize OpenAI client
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY

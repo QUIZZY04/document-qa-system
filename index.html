@@ -491,12 +491,19 @@ import { doc, getDoc } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-
 
 // Setup dynamic backend URL settings
 let currentBackend = localStorage.getItem('backendUrl');
-if (currentBackend === 'http://127.0.0.1:5000' || currentBackend === 'http://localhost:5000') {
-    localStorage.setItem('backendUrl', 'http://192.168.1.5:5000');
-    currentBackend = 'http://192.168.1.5:5000';
+
+// Default backend fallback (the host PC's local IP)
+let defaultBackend = 'http://192.168.1.5:5000';
+
+// If loaded directly from the backend server, use the current origin
+if (window.location.origin && window.location.origin.startsWith('http') && !window.location.origin.includes('github.io')) {
+    defaultBackend = window.location.origin;
 }
-if (!currentBackend) {
-    currentBackend = 'http://192.168.1.5:5000';
+
+// Auto-migrate old loopback URLs or unset URLs to our intelligent default
+if (!currentBackend || currentBackend === 'http://127.0.0.1:5000' || currentBackend === 'http://localhost:5000') {
+    localStorage.setItem('backendUrl', defaultBackend);
+    currentBackend = defaultBackend;
 }
 const backendSettingsLink = document.getElementById("backend-settings-link");
 if (backendSettingsLink) {
