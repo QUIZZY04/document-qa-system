@@ -90,7 +90,13 @@ function parseLimitToLakh(raw) {
 }
 
 function extractTargetAmountLakh(question) {
-    const q = question.replace(/,/g, '').toLowerCase();
+    // Normalize Hindi terms to English equivalents for extraction
+    const q = question.toLowerCase()
+        .replace(/,/g, '')
+        .replace(/(?:रुपये|रुपए|रुपया|रु\.?|रू\.?)/g, 'rs')
+        .replace(/(?:लाख|ल\b)/g, 'lakh')
+        .replace(/(?:करोड़|करोड|सीआर\b)/g, 'crore')
+        .replace(/(?:क्लॉज|क्लाज|धारा)/g, 'clause');
     
     const unitRegex = /(\d+(?:\.\d+)?)\s*(crore|cr|lakh|l)\b/gi;
     let match;
@@ -443,6 +449,12 @@ db.collection("documents").where("status", "==", "Processing")
         console.error("Ingestion listener error:", error);
     });
 
+// Helper function to format answer text: converts markdown bold **text** to HTML <strong>text</strong>
+function formatAnswer(text) {
+    if (!text) return "";
+    return text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+}
+
 // Search API Endpoint: /ask
 app.post('/ask', async (req, res) => {
     const { question } = req.body;
@@ -451,9 +463,25 @@ app.post('/ask', async (req, res) => {
         return res.status(400).json({ error: "Question cannot be empty." });
     }
     
+    // Detect if the query is in Hindi (either via Devanagari script range or transliterated keywords)
+    const isHindiQuery = /[\u0900-\u097F]/.test(question) || 
+                         /\b(kaun|kya|kab|kaise|kis|kiske|kiski|kiska|hai|hain|ko|se|mein|me|par|ke|ki|ka|liye|tha|the|thi|raha|rahe|rahi|hoga|hoge|hogi|batao|bataiye|samjhaye|samjhao|chahiye|kar|sakte|sakta|sakti)\b/i.test(question);
+
+    const optionsEnglish = `\n\nHere are some options you can explore:
+<button class="chat-opt-btn" onclick="selectSuggestion('Who is approving authority under DOP clause 4.3 for Rs 2600000')">📊 Who is approving authority under DOP clause 4.3 for Rs 26 lakh?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause 4.1 for Rs 21 lakh')">💼 Who is approving authority under clause 4.1 for Rs 21 lakh?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('what does clause 4.3 cover?')">📖 What does clause 4.3 cover?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('what does ED stand for?')">🔍 What does ED stand for?</button>`;
+
+    const optionsHindi = `\n\nयहाँ कुछ विकल्प दिए गए हैं जिन्हें आप देख सकते हैं:
+<button class="chat-opt-btn" onclick="selectSuggestion('DOP क्लॉज 4.3 के तहत 26 lakh रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है')">📊 DOP क्लॉज 4.3 के तहत 26 लाख रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('क्लॉज 4.1 के तहत 21 lakh रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है')">💼 क्लॉज 4.1 के तहत 21 लाख रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('क्लॉज 4.3 में क्या शामिल है')">📖 क्लॉज 4.3 में क्या शामिल है?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('ED का क्या अर्थ है')">🔍 ED का क्या अर्थ है?</button>`;
+
     // ── 0. Handle Greetings and Short Queries Conversational style ──
     const lowerQ = question.trim().toLowerCase().replace(/[?,.]/g, '');
-    const isGreeting = /^(hi|hello|hey|good\s+morning|good\s+afternoon|good\s+evening|greetings|yo|help|sup)(\s+.*)?$/i.test(lowerQ);
+    const isGreeting = /^(hi|hello|hey|good\s+morning|good\s+afternoon|good\s+evening|greetings|yo|help|sup|नमस्ते|नमस्कार|हेलो|प्रणाम)(\s+.*)?$/i.test(lowerQ);
     if (isGreeting) {
         try {
             const completion = await openai.chat.completions.create({
@@ -465,6 +493,8 @@ app.post('/ask', async (req, res) => {
 Your goal is to greet the user and offer options to help them get started.
 The uploaded document is 'DOP Sec II Revised march 2023.pdf', which covers Delegation of Powers (DOP) for purchases, contracts, stores & spares, etc.
 Respond in natural, friendly, conversational language. End your greeting by asking what they would like to search.
+Write your greeting in separate, clear paragraphs (separated by double newlines '\\n\\n') when appropriate. Use markdown **bolding** to highlight important terms.
+${isHindiQuery ? "Since the user is asking/interacting in Hindi/Hinglish, write your entire response in Hindi (using Devanagari script). Make it warm, friendly, and natural." : ""}
 Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
                     },
                     { role: 'user', content: question }
@@ -473,13 +503,9 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
                 temperature: 0.7
             });
             const responseData = JSON.parse(completion.choices[0].message.content);
-            const answerText = responseData.answer + `\n\nHere are some options you can explore:
-<button class="chat-opt-btn" onclick="selectSuggestion('Who is approving authority under DOP clause 4.3 for Rs 2600000')">📊 Who is approving authority under DOP clause 4.3 for Rs 26 lakh?</button>
-<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause 4.1 for Rs 21 lakh')">💼 Who is approving authority under clause 4.1 for Rs 21 lakh?</button>
-<button class="chat-opt-btn" onclick="selectSuggestion('what does clause 4.3 cover?')">📖 What does clause 4.3 cover?</button>
-<button class="chat-opt-btn" onclick="selectSuggestion('what does ED stand for?')">🔍 What does ED stand for?</button>`;
+            const answerText = responseData.answer + (isHindiQuery ? optionsHindi : optionsEnglish);
             return res.json({
-                answer: answerText,
+                answer: formatAnswer(answerText),
                 sourcePdf: "-",
                 pageNumber: "-",
                 confidence: "100%",
@@ -488,8 +514,21 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
         } catch (err) {
             console.error("GPT greeting helper error:", err);
             // Fallback to static greeting
-            return res.json({
-                answer: `Hello! I am your Document AI Assistant. How can I help you today?
+            const fallbackHindi = `नमस्ते! मैं आपका **दस्तावेज़ एआई सहायक (Document AI Assistant)** हूँ।
+
+आज मैं आपकी क्या सहायता कर सकता हूँ?
+
+यहाँ कुछ विकल्प दिए गए हैं जिन्हें आप देख सकते हैं:
+<button class="chat-opt-btn" onclick="selectSuggestion('DOP क्लॉज 4.3 के तहत 26 lakh रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है')">📊 DOP क्लॉज 4.3 के तहत 26 लाख रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('क्लॉज 4.1 के तहत 21 lakh रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है')">💼 क्लॉज 4.1 के तहत 21 लाख रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('क्लॉज 4.3 में क्या शामिल है')">📖 क्लॉज 4.3 में क्या शामिल है?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('ED का क्या अर्थ है')">🔍 ED का क्या अर्थ है?</button>
+
+आप इनमें से किसी भी विकल्प पर क्लिक कर सकते हैं या अपना प्रश्न पूछ सकते हैं!`;
+
+            const fallbackEnglish = `Hello! I am your **Document AI Assistant**.
+
+How can I help you today?
 
 Here are some options you can explore:
 <button class="chat-opt-btn" onclick="selectSuggestion('Who is approving authority under DOP clause 4.3 for Rs 2600000')">📊 Who is approving authority under DOP clause 4.3 for Rs 26 lakh?</button>
@@ -497,7 +536,10 @@ Here are some options you can explore:
 <button class="chat-opt-btn" onclick="selectSuggestion('what does clause 4.3 cover?')">📖 What does clause 4.3 cover?</button>
 <button class="chat-opt-btn" onclick="selectSuggestion('what does ED stand for?')">🔍 What does ED stand for?</button>
 
-Feel free to click any of these options or ask your own question!`,
+Feel free to click any of these options or ask your own question!`;
+
+            return res.json({
+                answer: formatAnswer(isHindiQuery ? fallbackHindi : fallbackEnglish),
                 sourcePdf: "-",
                 pageNumber: "-",
                 confidence: "100%",
@@ -508,6 +550,13 @@ Feel free to click any of these options or ask your own question!`,
     
     try {
         console.log(`Searching answers for query: "${question}"...`);
+
+        // Normalize Hindi terms to English equivalents for extraction and matching
+        const normalizedQuestion = question.toLowerCase()
+            .replace(/(?:रुपये|रुपए|रुपया|रु\.?|रू\.?)/g, 'rs')
+            .replace(/(?:लाख|ल\b)/g, 'lakh')
+            .replace(/(?:करोड़|करोड|सीआर\b)/g, 'crore')
+            .replace(/(?:क्लॉज|क्लाज|धारा)/g, 'clause');
         
         // 1. Generate query embedding
         const queryEmbeddingResponse = await openai.embeddings.create({
@@ -516,11 +565,11 @@ Feel free to click any of these options or ask your own question!`,
         });
         const queryEmbedding = queryEmbeddingResponse.data[0].embedding;
         
-        // Extract section/clause numbers (decimals like 4.3, 4.1 or integers like 19, 15 preceded by clause indicators)
+        // Extract section/clause numbers
         const clauseRegex = /(\b\d+\.\d+\b)|(?:\b(?:clause|cl|section|si|item|s\.no|no\.?|number)\s+(\d+)(?!\.\d)\b)/gi;
         let clauseMatches = [];
         let match;
-        while ((match = clauseRegex.exec(question)) !== null) {
+        while ((match = clauseRegex.exec(normalizedQuestion)) !== null) {
             if (match[1]) {
                 clauseMatches.push(match[1]); // e.g. "4.3"
             } else if (match[2]) {
@@ -540,7 +589,9 @@ Feel free to click any of these options or ask your own question!`,
         const chunksSnap = await query.get();
         if (chunksSnap.empty) {
             return res.json({
-                answer: "No documents have been uploaded or indexed yet. Please go to the admin panel and upload PDFs.",
+                answer: formatAnswer(isHindiQuery 
+                    ? "अभी तक कोई दस्तावेज़ अपलोड या अनुक्रमित नहीं किया गया है। कृपया एडमिन पैनल पर जाएं और पीडीएफ अपलोड करें।" 
+                    : "No documents have been uploaded or indexed yet. Please go to the admin panel and upload PDFs."),
                 sourcePdf: "-",
                 pageNumber: "-",
                 confidence: "-",
@@ -612,6 +663,9 @@ Your instructions:
 1. If the user is asking a general question about yourself, your capabilities, your accuracy, or giving general feedback/greetings, reply naturally, politely, and conversationally (like ChatGPT). Explain how you work (grounded in the policy manuals using vector search and deterministic limit checks) but answer their immediate query directly.
 2. If the user is asking an entirely off-topic query (e.g. recipes, general coding, unrelated trivia), politely explain that you are specialized in the uploaded policy manuals and cannot answer that, then guide them back.
 3. Formulate a friendly follow-up asking what they'd like to check.
+4. Structure your response in multiple short, distinct paragraphs (separated by double newlines '\\n\\n') to make it easy to read.
+5. Use markdown **bolding** to highlight important terms.
+${isHindiQuery ? "Since the user is asking/interacting in Hindi/Hinglish, write your entire response in Hindi (using Devanagari script)." : ""}
 Format your response strictly as JSON: {"answer": "...", "clause": "-"}`
                         },
                         { role: 'user', content: question }
@@ -620,13 +674,9 @@ Format your response strictly as JSON: {"answer": "...", "clause": "-"}`
                     temperature: 0.7
                 });
                 const responseData = JSON.parse(completion.choices[0].message.content);
-                const answerText = responseData.answer + `\n\nHere are some options you can explore:
-<button class="chat-opt-btn" onclick="selectSuggestion('Who is approving authority under DOP clause 4.3 for Rs 2600000')">📊 Who is approving authority under DOP clause 4.3 for Rs 26 lakh?</button>
-<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause 4.1 for Rs 21 lakh')">💼 Who is approving authority under clause 4.1 for Rs 21 lakh?</button>
-<button class="chat-opt-btn" onclick="selectSuggestion('what does clause 4.3 cover?')">📖 What does clause 4.3 cover?</button>
-<button class="chat-opt-btn" onclick="selectSuggestion('what does ED stand for?')">🔍 What does ED stand for?</button>`;
+                const answerText = responseData.answer + (isHindiQuery ? optionsHindi : optionsEnglish);
                 return res.json({
-                    answer: answerText,
+                    answer: formatAnswer(answerText),
                     sourcePdf: "-",
                     pageNumber: "-",
                     confidence: "Low",
@@ -634,14 +684,10 @@ Format your response strictly as JSON: {"answer": "...", "clause": "-"}`
                 });
             } catch (err) {
                 console.error("GPT low similarity helper error:", err);
+                const errFallbackHindi = `मुझे अपलोड किए गए मैनुअल में आपके प्रश्न का उत्तर देने के लिए कोई प्रासंगिक अनुभाग नहीं मिला।`;
+                const errFallbackEnglish = `I couldn't find any relevant sections in the uploaded manuals to answer your question.`;
                 return res.json({
-                    answer: `I couldn't find any relevant sections in the uploaded manuals to answer your question.
-
-Here are some options you can explore:
-<button class="chat-opt-btn" onclick="selectSuggestion('Who is approving authority under DOP clause 4.3 for Rs 2600000')">📊 Who is approving authority under DOP clause 4.3 for Rs 26 lakh?</button>
-<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause 4.1 for Rs 21 lakh')">💼 Who is approving authority under clause 4.1 for Rs 21 lakh?</button>
-<button class="chat-opt-btn" onclick="selectSuggestion('what does clause 4.3 cover?')">📖 What does clause 4.3 cover?</button>
-<button class="chat-opt-btn" onclick="selectSuggestion('what does ED stand for?')">🔍 What does ED stand for?</button>`,
+                    answer: formatAnswer((isHindiQuery ? errFallbackHindi : errFallbackEnglish) + (isHindiQuery ? optionsHindi : optionsEnglish)),
                     sourcePdf: "-",
                     pageNumber: "-",
                     confidence: "Low",
@@ -702,9 +748,20 @@ ${lowerReasons ? `- Cannot approve: ${lowerReasons}` : ''}
 
 Instructions:
 1. Explain this to the user in a natural, friendly, and conversational style (general user language).
-   Example layout:
-   "Under Clause ${clauseNum} for ${clauseRow.Nature || 'Delegation of Powers'}, the competent approving authority is the ${authority.name}. They can approve values ${authority.limitText}. Since your requested amount of ${targetDisplay} is within their limit, they can approve it. Lower levels like ${lowerReasons ? lowerReasons : 'none'} do not have sufficient powers for this amount."
-2. ALWAYS end your response by asking the user a friendly, relevant follow-up question to engage and interact (e.g. asking if they want to check another amount, check another clause, or see definition details).
+   Use **bolding** to highlight important words (e.g., specific clause number, the competent authority name like **${authority.name}**, amounts like **${targetDisplay}**, etc.).
+   Structure the response using multiple short, clear paragraphs (separated by double newlines '\\n\\n') so that it is easy to read. Do NOT put the explanation and limits into a single paragraph block.
+   ${isHindiQuery ? `Since the user is asking in Hindi/Hinglish, write the entire explanation and response in Hindi (using Devanagari script). Translate the explanation naturally but keep exact names/limits/amounts/clause numbers as they are, but bolded (e.g., क्लॉज **${clauseNum}**, **${authority.name}**, **${tl} lakh**, etc.). Example layout in Hindi:
+   "क्लॉज **${clauseNum}** के तहत **${clauseRow.Nature || 'Delegation of Powers'}** के लिए, सक्षम प्राधिकारी **${authority.name}** हैं। वे **${authority.limitText}** तक के मूल्यों को मंजूरी दे सकते हैं।
+   
+   चूंकि आपकी अनुरोधित राशि **${targetDisplay}** उनकी सीमा के भीतर है, वे इसे मंजूरी दे सकते हैं।
+   
+   निचले स्तर जैसे ${lowerReasons ? lowerReasons : 'कोई नहीं'} के पास इस राशि के लिए पर्याप्त शक्तियां नहीं हैं।"` : `Example layout:
+   "Under Clause **${clauseNum}** for **${clauseRow.Nature || 'Delegation of Powers'}**, the competent approving authority is the **${authority.name}**. They can approve values **${authority.limitText}**.
+   
+   Since your requested amount of **${targetDisplay}** is within their limit, they can approve it.
+   
+   Lower levels like ${lowerReasons ? lowerReasons : 'none'} do not have sufficient powers for this amount."`}
+2. ALWAYS end your response by asking the user a friendly, relevant follow-up question to engage and interact (e.g. asking if they want to check another amount, check another clause, or see definition details). Write this follow-up question in a separate, final paragraph. ${isHindiQuery ? "Write this follow-up question in Hindi." : ""}
 3. Do not alter any numbers or authority names in your explanation.
 
 Answer JSON:`;
@@ -719,7 +776,10 @@ CRITICAL INSTRUCTIONS FOR 100% ACCURACY AND NO HALLUCINATIONS:
 5. Format: Respond with JSON format strictly: {"answer": "...", "clause": "..."}. Fill "clause" with the specific clause number found (e.g. "Clause 3.1" or "Clause 4.3") or "General" if not specified.
 6. Tone: Keep the answer clear, user-friendly, and conversational (general user language) rather than dense legalese, while strictly preserving all numbers, names, and facts.
 7. Interaction: End your response by asking the user a friendly, contextual follow-up question related to their query to engage them.
-8. Parent/Sub-Clauses: If the user asks about a parent clause (e.g. Clause 20, Clause 17, Clause 18, Clause 4) and the context contains its sub-clauses (e.g. 20.1, 20.2, 17.1, 4.3), treat the sub-clauses as part of the query and summarize/list their limits and details as the answer. Do not say you couldn't find the answer.`;
+8. Parent/Sub-Clauses: If the user asks about a parent clause (e.g. Clause 20, Clause 17, Clause 18, Clause 4) and the context contains its sub-clauses (e.g. 20.1, 20.2, 17.1, 4.3), treat the sub-clauses as part of the query and summarize/list their limits and details as the answer. Do not say you couldn't find the answer.
+9. Paragraphs and Formatting: Present your response in multiple distinct, clear paragraphs (separated by double newlines '\\n\\n') to improve readability. Do NOT write one single large block of text. Put the follow-up question in its own separate final paragraph.
+10. Bolding: Highlight key names, limits, amounts, authorities, and clause numbers using markdown **bolding** to draw user focus.
+${isHindiQuery ? `11. Multilingual: Since the user query is in Hindi/Hinglish, write your response in Hindi (using Devanagari script). Translate the details and explanation to Hindi naturally, but keep numbers, limits, amounts, and specific names of clauses/authorities accurate and formatted using **bolding**.` : ``}`;
 
             userPrompt = `Context:\n${contextText}\n\nQuestion: ${question}\n\nAnswer JSON:`;
         }
@@ -750,7 +810,8 @@ CRITICAL INSTRUCTIONS FOR 100% ACCURACY AND NO HALLUCINATIONS:
         const notFoundPatterns = [
             "couldn't find", "could not find", "cannot find", 
             "not found", "no information", "insufficient information", 
-            "does not state", "not mention"
+            "does not state", "not mention",
+            "नहीं मिला", "जानकारी नहीं है", "प्रासंगिक जानकारी नहीं", "उत्तर नहीं मिल"
         ];
         const isNotFound = notFoundPatterns.some(pat => answer.toLowerCase().includes(pat));
         
@@ -758,35 +819,48 @@ CRITICAL INSTRUCTIONS FOR 100% ACCURACY AND NO HALLUCINATIONS:
         if (isNotFound) {
             confidencePercentage = 0;
             clause = "-";
-            buttonsHtml = `\n\nHere are some options you can explore:
-<button class="chat-opt-btn" onclick="selectSuggestion('Who is approving authority under DOP clause 4.3 for Rs 2600000')">📊 Who is approving authority under DOP clause 4.3 for Rs 26 lakh?</button>
-<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause 4.1 for Rs 21 lakh')">💼 Who is approving authority under clause 4.1 for Rs 21 lakh?</button>
-<button class="chat-opt-btn" onclick="selectSuggestion('what does clause 4.3 cover?')">📖 What does clause 4.3 cover?</button>
-<button class="chat-opt-btn" onclick="selectSuggestion('what does ED stand for?')">🔍 What does ED stand for?</button>`;
-            answer = `I couldn't find the answer in the provided documents.` + buttonsHtml;
+            if (isHindiQuery) {
+                buttonsHtml = `\n\nयहाँ कुछ विकल्प दिए गए हैं जिन्हें आप देख सकते हैं:
+<button class="chat-opt-btn" onclick="selectSuggestion('DOP क्लॉज 4.3 के तहत 26 lakh रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है')">📊 DOP क्लॉज 4.3 के तहत 26 लाख रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('क्लॉज 4.1 के तहत 21 lakh रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है')">💼 क्लॉज 4.1 के तहत 21 लाख रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('क्लॉज 4.3 में क्या शामिल है')">📖 क्लॉज 4.3 में क्या शामिल है?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('ED का क्या अर्थ है')">🔍 ED का क्या अर्थ है?</button>`;
+                answer = `मैं प्रदान किए गए दस्तावेजों में उत्तर नहीं ढूंढ सका।` + buttonsHtml;
+            } else {
+                buttonsHtml = optionsEnglish;
+                answer = `I couldn't find the answer in the provided documents.` + buttonsHtml;
+            }
         } else if (preComputedFact) {
             // Append dynamic threshold options
             const { clauseNum, targetLakh: tl } = preComputedFact;
             let nextAmount = tl === 26 ? 21 : 26;
             let otherClause = clauseNum === "4.3" ? "4.1" : "4.3";
-            buttonsHtml = `\n\n<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause ${clauseNum} for Rs ${nextAmount} lakh')">🔍 Check Rs ${nextAmount} lakh under Clause ${clauseNum}</button>
+            if (isHindiQuery) {
+                buttonsHtml = `\n\n<button class="chat-opt-btn" onclick="selectSuggestion('DOP क्लॉज ${clauseNum} के तहत रुपये ${nextAmount} लाख की जांच करें')">🔍 क्लॉज ${clauseNum} के तहत रुपये ${nextAmount} लाख की जांच करें</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('रुपये 21 लाख के लिए क्लॉज ${otherClause} की जांच करें')">💼 रुपये 21 लाख के लिए क्लॉज ${otherClause} की जांच करें</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('क्लॉज ${clauseNum} में क्या शामिल है')">📖 क्लॉज ${clauseNum} में क्या शामिल है?</button>`;
+            } else {
+                buttonsHtml = `\n\n<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause ${clauseNum} for Rs ${nextAmount} lakh')">🔍 Check Rs ${nextAmount} lakh under Clause ${clauseNum}</button>
 <button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause ${otherClause} for Rs 21 lakh')">💼 Check Clause ${otherClause} for Rs 21 lakh</button>
 <button class="chat-opt-btn" onclick="selectSuggestion('what does clause ${clauseNum} cover?')">📖 What does Clause ${clauseNum} cover?</button>`;
+            }
             answer = answer + buttonsHtml;
         } else {
             // Append contextual follow-ups based on detected clause
             let detectedClause = clauseMatches[0] || (clause !== "General" ? clause.replace("Clause ", "") : null);
             if (detectedClause) {
                 let otherClause = detectedClause.includes("4.3") ? "4.1" : "4.3";
-                buttonsHtml = `\n\n<button class="chat-opt-btn" onclick="selectSuggestion('Who is approving authority under DOP clause ${detectedClause} for Rs 2600000')">📊 Who is approving authority under Clause ${detectedClause} for Rs 26 lakh?</button>
+                if (isHindiQuery) {
+                    buttonsHtml = `\n\n<button class="chat-opt-btn" onclick="selectSuggestion('DOP क्लॉज ${detectedClause} के तहत 26 lakh रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है')">📊 DOP क्लॉज ${detectedClause} के तहत 26 लाख रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('DOP क्लॉज ${detectedClause} के तहत 21 lakh रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है')">💼 DOP क्लॉज ${detectedClause} के तहत 21 लाख रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('क्लॉज ${otherClause} में क्या शामिल है')">📖 क्लॉज ${otherClause} में क्या शामिल है?</button>`;
+                } else {
+                    buttonsHtml = `\n\n<button class="chat-opt-btn" onclick="selectSuggestion('Who is approving authority under DOP clause ${detectedClause} for Rs 2600000')">📊 Who is approving authority under Clause ${detectedClause} for Rs 26 lakh?</button>
 <button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause ${detectedClause} for Rs 2100000')">💼 Who is approving authority under Clause ${detectedClause} for Rs 21 lakh?</button>
 <button class="chat-opt-btn" onclick="selectSuggestion('what does clause ${otherClause} cover?')">📖 What does Clause ${otherClause} cover?</button>`;
+                }
             } else {
-                buttonsHtml = `\n\nHere are some options you can explore:
-<button class="chat-opt-btn" onclick="selectSuggestion('Who is approving authority under DOP clause 4.3 for Rs 2600000')">📊 Who is approving authority under DOP clause 4.3 for Rs 26 lakh?</button>
-<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause 4.1 for Rs 21 lakh')">💼 Who is approving authority under clause 4.1 for Rs 21 lakh?</button>
-<button class="chat-opt-btn" onclick="selectSuggestion('what does clause 4.3 cover?')">📖 What does clause 4.3 cover?</button>
-<button class="chat-opt-btn" onclick="selectSuggestion('what does ED stand for?')">🔍 What does ED stand for?</button>`;
+                buttonsHtml = isHindiQuery ? optionsHindi : optionsEnglish;
             }
             answer = answer + buttonsHtml;
         }
@@ -795,7 +869,7 @@ CRITICAL INSTRUCTIONS FOR 100% ACCURACY AND NO HALLUCINATIONS:
         const primarySource = topChunks[0];
         
         res.json({
-            answer: answer,
+            answer: formatAnswer(answer),
             sourcePdf: isNotFound ? "-" : primarySource.docName,
             pageNumber: isNotFound ? "-" : primarySource.pageNumber.toString(),
             confidence: isNotFound ? "Low" : `${confidencePercentage}%`,
@@ -804,14 +878,14 @@ CRITICAL INSTRUCTIONS FOR 100% ACCURACY AND NO HALLUCINATIONS:
         
     } catch (err) {
         console.error("QA search endpoint error:", err);
-        res.json({
-            answer: `I'm having trouble connecting to the document database right now due to a temporary network issue. Let's try again in a moment.
+        const errorFallbackTextHindi = `मुझे इस समय डेटाबेस से कनेक्ट करने में समस्या हो रही है। कृपया एक क्षण में पुन: प्रयास करें।
+        
+इस बीच, आप इन क्षेत्रों की जांच कर सकते हैं:`;
+        const errorFallbackTextEnglish = `I'm having trouble connecting to the document database right now due to a temporary network issue. Let's try again in a moment.
 
-In the meantime, you can explore these standard delegation of power areas:
-<button class="chat-opt-btn" onclick="selectSuggestion('Who is approving authority under DOP clause 4.3 for Rs 2600000')">📊 Who is approving authority under DOP clause 4.3 for Rs 26 lakh?</button>
-<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause 4.1 for Rs 21 lakh')">💼 Who is approving authority under clause 4.1 for Rs 21 lakh?</button>
-<button class="chat-opt-btn" onclick="selectSuggestion('what does clause 4.3 cover?')">📖 What does clause 4.3 cover?</button>
-<button class="chat-opt-btn" onclick="selectSuggestion('what does ED stand for?')">🔍 What does ED stand for?</button>`,
+In the meantime, you can explore these standard delegation of power areas:`;
+        res.json({
+            answer: (isHindiQuery ? errorFallbackTextHindi : errorFallbackTextEnglish) + (isHindiQuery ? optionsHindi : optionsEnglish),
             sourcePdf: "-",
             pageNumber: "-",
             confidence: "Low",
