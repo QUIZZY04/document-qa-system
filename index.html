@@ -436,7 +436,7 @@ body{
             <h2>🤖 Document AI Assistant</h2>
             <p>Grounded in your uploaded policy manuals and circulars</p>
             <p style="margin-top: 5px; font-size: 11.5px; color: var(--muted);">
-                Backend Server: <a href="#" id="backend-settings-link" style="color: var(--primary); text-decoration: underline; font-weight: 600; cursor: pointer;">http://127.0.0.1:5000</a>
+                Backend Server: <a href="#" id="backend-settings-link" style="color: var(--primary); text-decoration: underline; font-weight: 600; cursor: pointer;">http://192.168.1.5:5000</a>
             </p>
         </div>
 
@@ -490,7 +490,7 @@ import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-firestore.js";
 
 // Setup dynamic backend URL settings
-const currentBackend = localStorage.getItem('backendUrl') || 'http://127.0.0.1:5000';
+const currentBackend = localStorage.getItem('backendUrl') || 'http://192.168.1.5:5000';
 const backendSettingsLink = document.getElementById("backend-settings-link");
 if (backendSettingsLink) {
     backendSettingsLink.textContent = currentBackend;
@@ -554,7 +554,7 @@ window.askQuestion = async function() {
     sendBtn.disabled = true;
 
     try {
-        const backendUrl = localStorage.getItem('backendUrl') || 'http://127.0.0.1:5000';
+        const backendUrl = localStorage.getItem('backendUrl') || 'http://192.168.1.5:5000';
         const response = await fetch(`${backendUrl}/ask`, {
             method: "POST",
             headers: {
@@ -590,7 +590,7 @@ window.askQuestion = async function() {
 
     } catch (err) {
         console.error("QA query failed:", err);
-        const currentBackend = localStorage.getItem('backendUrl') || 'http://127.0.0.1:5000';
+        const currentBackend = localStorage.getItem('backendUrl') || 'http://192.168.1.5:5000';
         assistantMsg.innerHTML = `
             <div class="msg-content" style="color: red;">
                 Failed to retrieve answer: ${err.message}.<br><br>
