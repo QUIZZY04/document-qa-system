@@ -490,6 +490,13 @@ import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-firestore.js";
 
 // Setup dynamic backend URL settings
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.has('backendUrl')) {
+    localStorage.setItem('backendUrl', urlParams.get('backendUrl'));
+    const cleanUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
+    window.history.replaceState({}, document.title, cleanUrl);
+}
+
 let currentBackend = localStorage.getItem('backendUrl');
 
 // Default backend fallback (the host PC's local IP)
