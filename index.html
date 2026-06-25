@@ -499,16 +499,18 @@ if (urlParams.has('backendUrl')) {
 
 let currentBackend = localStorage.getItem('backendUrl');
 
-// Default backend fallback (the host PC's local IP)
-let defaultBackend = 'http://192.168.1.5:5000';
+// Fixed tunnel URL for GitHub Pages users
+const TUNNEL_URL = 'https://quizzy04backend.loca.lt';
 
-// If loaded directly from the backend server, use the current origin
-if (window.location.origin && window.location.origin.startsWith('http') && !window.location.origin.includes('github.io')) {
-    defaultBackend = window.location.origin;
-}
+// Default: if served from the backend server itself, use that origin; otherwise use tunnel
+let defaultBackend = window.location.origin.includes('github.io')
+    ? TUNNEL_URL
+    : window.location.origin;
 
-// Auto-migrate old loopback URLs or unset URLs to our intelligent default
-if (!currentBackend || currentBackend === 'http://127.0.0.1:5000' || currentBackend === 'http://localhost:5000') {
+// Auto-migrate stale / loopback URLs to our intelligent default
+const staleUrls = ['http://127.0.0.1:5000', 'http://localhost:5000', 'http://192.168.1.5:5000'];
+if (!currentBackend || staleUrls.includes(currentBackend) ||
+    (currentBackend.includes('.lhr.life') && currentBackend !== TUNNEL_URL)) {
     localStorage.setItem('backendUrl', defaultBackend);
     currentBackend = defaultBackend;
 }
