@@ -20,7 +20,7 @@ const bucket = admin.storage().bucket();
 
 // Helper to get OpenAI client (called inside functions where secret is available)
 function getOpenAI() {
-    return new OpenAI({ apiKey: openaiApiKey.value() });
+    return new OpenAI({ apiKey: openaiApiKey.value().trim() });
 }
 
 // =============================================================================
