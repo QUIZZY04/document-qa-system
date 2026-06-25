@@ -314,6 +314,22 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
         }
         console.log(`Extracted clause numbers from query:`, clauseMatches);
 
+        // 1. Direct metadata query for exact clauses (guarantees they are fetched)
+        let directChunks = [];
+        if (clauseMatches.length > 0) {
+            try {
+                const directQuery = db.collection("chunks").where("clauses", "array-contains-any", clauseMatches);
+                const directSnap = await directQuery.get();
+                directSnap.forEach(doc => {
+                    directChunks.push({ id: doc.id, ...doc.data() });
+                });
+                console.log(`Direct metadata query found ${directChunks.length} chunks matching:`, clauseMatches);
+            } catch (err) {
+                console.error("Direct clause query error:", err);
+            }
+        }
+
+        // 2. Vector search query
         const query = db.collection("chunks").findNearest({
             vectorField: 'embedding',
             queryVector: queryEmbedding,
@@ -322,7 +338,7 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
         });
 
         const chunksSnap = await query.get();
-        if (chunksSnap.empty) {
+        if (chunksSnap.empty && directChunks.length === 0) {
             return res.json({
                 answer: formatAnswer(isHindiQuery
                     ? "अभी तक कोई दस्तावेज़ अपलोड या अनुक्रमित नहीं किया गया है। कृपया एडमिन पैनल पर जाएं और पीडीएफ अपलोड करें।"
@@ -331,13 +347,30 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
             });
         }
 
+        // 3. Merge vector and direct search results, removing duplicates
+        const mergedChunksMap = new Map();
+        directChunks.forEach(c => {
+            mergedChunksMap.set(c.id, c);
+        });
+        chunksSnap.forEach(doc => {
+            if (!mergedChunksMap.has(doc.id)) {
+                mergedChunksMap.set(doc.id, { id: doc.id, ...doc.data() });
+            }
+        });
+
+        // 4. Calculate similarity and apply boosting for exact matches
         let allChunks = [];
-        chunksSnap.forEach((doc) => {
-            const chunkData = doc.data();
+        mergedChunksMap.forEach((chunkData) => {
             const vec = chunkData.embedding ? chunkData.embedding.toArray() : [];
             const similarity = vec.length > 0 ? cosineSimilarity(queryEmbedding, vec) : 0;
             let isExactClauseMatch = false;
+
             for (const clauseNum of clauseMatches) {
+                // Boost if the chunk metadata explicitly lists the clause or matches text regex
+                if (chunkData.clauses && chunkData.clauses.includes(clauseNum)) {
+                    isExactClauseMatch = true;
+                    break;
+                }
                 if (chunkData.text) {
                     const siRegex = new RegExp(`\\[SI:\\s*${clauseNum.replace('.', '\\.')}[\\s\\].(]`, 'i');
                     const wordRegex = new RegExp(`\\b${clauseNum.replace('.', '\\.')}\\.\\b`, 'i');
@@ -350,6 +383,7 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
             const boostedSimilarity = isExactClauseMatch ? similarity + 0.35 : similarity;
             allChunks.push({ ...chunkData, rawSimilarity: similarity, boostedSimilarity, isExactClauseMatch });
         });
+
         allChunks.sort((a, b) => b.boostedSimilarity - a.boostedSimilarity);
         let topChunks = allChunks.slice(0, 15);
 
@@ -358,7 +392,8 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
         let confidencePercentage = topDoc.isExactClauseMatch ? 100 : scaleConfidence(highestSimilarity);
         console.log(`Top chunk: raw=${topDoc.rawSimilarity?.toFixed(4)}, boosted=${topDoc.boostedSimilarity?.toFixed(4)}, exactClauseMatch=${topDoc.isExactClauseMatch} -> confidence: ${confidencePercentage}%`);
 
-        if (highestSimilarity < 0.25) {
+        // Lower threshold from 0.25 to 0.20 to be more permissive with general questions
+        if (highestSimilarity < 0.20) {
             try {
                 const completion = await getOpenAI().chat.completions.create({
                     model: 'gpt-4o',
@@ -497,7 +532,7 @@ ${isHindiQuery ? "Write your entire response in Hindi (Devanagari script)." : ""
             }
             answer = answer + buttonsHtml;
         } else {
-            let detectedClause = clauseMatches[0] || (clause !== "General" ? clause.replace("Clause ", "") : null);
+            let detectedClause = clauseMatches[0] || (clause !== "General" && clause.length < 15 ? clause.replace("Clause ", "") : null);
             if (detectedClause) {
                 let otherClause = detectedClause.includes("4.3") ? "4.1" : "4.3";
                 if (isHindiQuery) {
@@ -598,28 +633,60 @@ exports.indexDocument = functions
                 }
             }
 
-            const maxChunkLength = 1500;
+            // Line-aware chunking to ensure rows/lines are not cut in half
             let chunks = [];
-            if (pageText.length > maxChunkLength) {
-                let startIndex = 0;
-                while (startIndex < pageText.length) {
-                    chunks.push(pageText.substring(startIndex, startIndex + maxChunkLength));
-                    startIndex += 1000;
+            let currentChunkLines = [];
+            let currentLength = 0;
+            const maxChunkLength = 1500;
+            const overlapLines = 2; // Overlap of 2 lines for continuity
+
+            for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+                const line = lines[lineIdx];
+                currentChunkLines.push(line);
+                currentLength += line.length + 1; // +1 for newline
+
+                if (currentLength >= maxChunkLength || lineIdx === lines.length - 1) {
+                    chunks.push(currentChunkLines.join('\n'));
+                    // Keep the last few lines for overlap
+                    const startIndex = Math.max(0, currentChunkLines.length - overlapLines);
+                    currentChunkLines = currentChunkLines.slice(startIndex);
+                    currentLength = currentChunkLines.reduce((acc, l) => acc + l.length + 1, 0);
                 }
-            } else {
-                chunks.push(pageText);
             }
 
             for (let j = 0; j < chunks.length; j++) {
-                const prefixedText = `[Context - Document: ${docData.name} | Page: ${pageNumber} | Table Columns: ${currentHeaders}]\n${chunks[j]}`;
+                const chunkText = chunks[j];
+                const prefixedText = `[Context - Document: ${docData.name} | Page: ${pageNumber} | Table Columns: ${currentHeaders}]\n${chunkText}`;
+                
+                // Extract clause numbers contained in this chunk for high-accuracy direct retrieval
+                const clauseSet = new Set();
+                const siRegex = /\[SI:\s*([^\]]+)\]/gi;
+                let siMatch;
+                siRegex.lastIndex = 0;
+                while ((siMatch = siRegex.exec(chunkText)) !== null) {
+                    const val = siMatch[1].trim();
+                    const numMatch = val.match(/^(\d+(?:\.\d+)?)/);
+                    if (numMatch) {
+                        clauseSet.add(numMatch[1]);
+                    } else if (val.length < 15) {
+                        clauseSet.add(val.toLowerCase());
+                    }
+                }
+                const clauses = Array.from(clauseSet);
+
                 const embeddingResponse = await getOpenAI().embeddings.create({
                     model: "text-embedding-3-small",
                     input: prefixedText
                 });
                 const embedding = embeddingResponse.data[0].embedding;
                 await db.collection("chunks").add({
-                    docId, docName: docData.name, pageNumber,
-                    text: prefixedText, embedding: FieldValue.vector(embedding), uploadDate: new Date()
+                    docId,
+                    docName: docData.name,
+                    pageNumber,
+                    text: prefixedText,
+                    clauses: clauses,
+                    embedding: FieldValue.vector(embedding),
+                    uploadDate: new Date()
                 });
             }
         }
