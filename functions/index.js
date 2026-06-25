@@ -109,11 +109,16 @@ function extractTargetAmountLakh(question) {
         const val = parseFloat(match[1]);
         return val >= 10000 ? val / 100000 : val;
     }
+    // Only extract standalone numbers as amounts if they are large (>= 10000)
+    // This avoids extracting simple clause numbers (e.g. "clause 10") as amounts
     let temp = q.replace(/\b\d+\.\d+\b/g, '');
-    const anyNumRegex = /\b(\d+(?:\.\d+)?)\b/g;
-    if ((match = anyNumRegex.exec(temp)) !== null) {
+    const anyNumRegex = /\b(\d+)\b/g;
+    anyNumRegex.lastIndex = 0;
+    while ((match = anyNumRegex.exec(temp)) !== null) {
         const val = parseFloat(match[1]);
-        return val >= 10000 ? val / 100000 : val;
+        if (val >= 10000) {
+            return val / 100000;
+        }
     }
     return null;
 }
@@ -128,14 +133,59 @@ const AUTHORITY_ORDER = ['SM', 'DGM', 'AGM', 'GM', 'ED'];
 function extractClauseRow(chunks, clauseNumber) {
     const siRe = new RegExp(`\\[SI:\\s*${clauseNumber.replace('.', '\\.')}[\\s\\]|]`, 'i');
     for (const chunk of chunks) {
-        for (const line of (chunk.text || '').split('\n')) {
+        const lines = (chunk.text || '').split('\n');
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
             if (!siRe.test(line)) continue;
-            const extract = (key) => {
-                const m = line.match(new RegExp(`\\[${key}:\\s*([^\\]]+)\\]`, 'i'));
+            
+            const extract = (l, key) => {
+                const m = l.match(new RegExp(`\\[${key}:\\s*([^\\]]+)\\]`, 'i'));
                 return m ? m[1].trim() : null;
             };
-            const row = { Nature: extract('Nature of Power'), ED: extract('ED'),
-                GM: extract('GM'), AGM: extract('AGM'), DGM: extract('DGM'), SM: extract('SM') };
+
+            let row = { 
+                Nature: extract(line, 'Nature of Power') || '', 
+                ED: extract(line, 'ED') || '',
+                GM: extract(line, 'GM') || '', 
+                AGM: extract(line, 'AGM') || '', 
+                DGM: extract(line, 'DGM') || '', 
+                SM: extract(line, 'SM') || '' 
+            };
+
+            // If the limits are empty or contain placeholder text like "Upto Rs.",
+            // scan the next few lines in the chunk to find actual numeric limits.
+            const needsLimits = (r) => {
+                const keys = ['ED', 'GM', 'AGM', 'DGM', 'SM'];
+                return keys.every(k => !r[k] || r[k].toLowerCase() === 'upto rs' || r[k].toLowerCase() === 'upto rs.');
+            };
+
+            if (needsLimits(row)) {
+                // Scan the next 3 lines for actual limits
+                for (let nextIdx = i + 1; nextIdx < Math.min(lines.length, i + 4); nextIdx++) {
+                    const nextLine = lines[nextIdx];
+                    const nextED = extract(nextLine, 'ED');
+                    const nextGM = extract(nextLine, 'GM');
+                    const nextAGM = extract(nextLine, 'AGM');
+                    const nextDGM = extract(nextLine, 'DGM');
+                    const nextSM = extract(nextLine, 'SM');
+                    
+                    if (nextED || nextGM || nextAGM || nextDGM || nextSM) {
+                        const hasNumbers = (val) => val && /\d/.test(val);
+                        if (hasNumbers(nextED) || hasNumbers(nextGM) || hasNumbers(nextAGM) || hasNumbers(nextDGM) || hasNumbers(nextSM)) {
+                            row.ED = nextED || row.ED;
+                            row.GM = nextGM || row.GM;
+                            row.AGM = nextAGM || row.AGM;
+                            row.DGM = nextDGM || row.DGM;
+                            row.SM = nextSM || row.SM;
+                            
+                            const nextNature = extract(nextLine, 'Nature of Power');
+                            if (nextNature) row.Nature += ' ' + nextNature;
+                            break;
+                        }
+                    }
+                }
+            }
+
             if (row.ED || row.GM || row.AGM || row.DGM || row.SM) return row;
         }
     }
