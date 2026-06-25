@@ -499,20 +499,18 @@ if (urlParams.has('backendUrl')) {
 
 let currentBackend = localStorage.getItem('backendUrl');
 
-// Fixed tunnel URL for GitHub Pages users
-const TUNNEL_URL = 'https://quizzy04backend.loca.lt';
+// ✅ PERMANENT BACKEND — Firebase Cloud Functions (works everywhere, 24/7)
+const FIREBASE_BACKEND = 'https://asia-south1-robotic-af198.cloudfunctions.net/api';
 
-// Default: if served from the backend server itself, use that origin; otherwise use tunnel
-let defaultBackend = window.location.origin.includes('github.io')
-    ? TUNNEL_URL
-    : window.location.origin;
-
-// Auto-migrate stale / loopback URLs to our intelligent default
-const staleUrls = ['http://127.0.0.1:5000', 'http://localhost:5000', 'http://192.168.1.5:5000'];
+// Auto-migrate any old local/tunnel URLs to the permanent Firebase backend
+const staleUrls = [
+    'http://127.0.0.1:5000', 'http://localhost:5000', 'http://192.168.1.5:5000',
+    'https://quizzy04backend.loca.lt'
+];
 if (!currentBackend || staleUrls.includes(currentBackend) ||
-    (currentBackend.includes('.lhr.life') && currentBackend !== TUNNEL_URL)) {
-    localStorage.setItem('backendUrl', defaultBackend);
-    currentBackend = defaultBackend;
+    currentBackend.includes('.lhr.life') || currentBackend.includes('.loca.lt')) {
+    localStorage.setItem('backendUrl', FIREBASE_BACKEND);
+    currentBackend = FIREBASE_BACKEND;
 }
 const backendSettingsLink = document.getElementById("backend-settings-link");
 if (backendSettingsLink) {
@@ -577,12 +575,11 @@ window.askQuestion = async function() {
     sendBtn.disabled = true;
 
     try {
-        const backendUrl = localStorage.getItem('backendUrl') || 'http://192.168.1.5:5000';
+        const backendUrl = localStorage.getItem('backendUrl') || 'https://asia-south1-robotic-af198.cloudfunctions.net/api';
         const response = await fetch(`${backendUrl}/ask`, {
             method: "POST",
             headers: {
-                "Content-Type": "application/json",
-                "bypass-tunnel-reminder": "true"
+                "Content-Type": "application/json"
             },
             body: JSON.stringify({ question: question })
         });
