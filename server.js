@@ -33,18 +33,35 @@ const openai = new OpenAI({
 });
 
 // Initialize Firebase Admin SDK
-const serviceAccountPath = path.join(__dirname, 'service-account.json');
-if (!fs.existsSync(serviceAccountPath)) {
-    console.error("CRITICAL ERROR: 'service-account.json' not found in the root directory!");
-    console.error("Please follow the instructions to download your service account key and place it here.");
-    process.exit(1);
+// Supports two modes:
+// 1. Cloud deployment (Render.com): reads credentials from FIREBASE_SERVICE_ACCOUNT env var (JSON string)
+// 2. Local development: reads from service-account.json file
+let serviceAccount;
+if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    try {
+        serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+        console.log("Firebase: loaded credentials from FIREBASE_SERVICE_ACCOUNT env var.");
+    } catch (e) {
+        console.error("CRITICAL ERROR: FIREBASE_SERVICE_ACCOUNT env var is not valid JSON!", e.message);
+        process.exit(1);
+    }
+} else {
+    const serviceAccountPath = path.join(__dirname, 'service-account.json');
+    if (!fs.existsSync(serviceAccountPath)) {
+        console.error("CRITICAL ERROR: 'service-account.json' not found and FIREBASE_SERVICE_ACCOUNT env var is not set!");
+        console.error("For cloud deployment: set FIREBASE_SERVICE_ACCOUNT env var in your hosting platform.");
+        console.error("For local development: place service-account.json in the project root.");
+        process.exit(1);
+    }
+    serviceAccount = require(serviceAccountPath);
+    console.log("Firebase: loaded credentials from service-account.json file.");
 }
 
-const serviceAccount = require(serviceAccountPath);
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    storageBucket: "robotic-af198.firebasestorage.app" // Match your storage bucket config
+    storageBucket: "robotic-af198.firebasestorage.app"
 });
+
 
 const db = admin.firestore();
 const bucket = admin.storage().bucket();
