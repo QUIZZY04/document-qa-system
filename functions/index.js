@@ -27,6 +27,27 @@ function getOpenAI() {
 // HELPER FUNCTIONS (shared logic from server.js)
 // =============================================================================
 
+function extractKeywords(text) {
+    const stopwords = new Set([
+        'what', 'is', 'the', 'of', 'for', 'under', 'who', 'approving', 'authority', 'clause',
+        'does', 'stand', 'how', 'can', 'i', 'help', 'you', 'today', 'are', 'some',
+        'options', 'explore', 'check', 'rs', 'lakh', 'crore', 'in', 'to', 'and', 'or', 'a',
+        'an', 'this', 'that', 'these', 'those', 'where', 'when', 'why', 'which', 'about', 'from',
+        'document', 'documents', 'manual', 'manuals', 'policy', 'policies'
+    ]);
+    const words = text.toLowerCase()
+        .replace(/[.,?/()'"\[\]:|]/g, ' ')
+        .split(/\s+/);
+    const keywords = [];
+    for (const w of words) {
+        const clean = w.trim();
+        if (clean.length > 2 && !stopwords.has(clean) && !/^\d+$/.test(clean)) {
+            keywords.push(clean);
+        }
+    }
+    return keywords;
+}
+
 function cosineSimilarity(vecA, vecB) {
     let dotProduct = 0.0, normA = 0.0, normB = 0.0;
     for (let i = 0; i < vecA.length; i++) {
@@ -263,7 +284,7 @@ app.post('/ask', async (req, res) => {
     if (isGreeting) {
         try {
             const completion = await getOpenAI().chat.completions.create({
-                model: 'gpt-4o',
+                model: 'gpt-4o-mini',
                 messages: [
                     {
                         role: 'system',
@@ -314,18 +335,30 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
         }
         console.log(`Extracted clause numbers from query:`, clauseMatches);
 
-        // 1. Direct metadata query for exact clauses (guarantees they are fetched)
+        const queryKeywords = extractKeywords(question);
+        console.log(`Extracted query keywords:`, queryKeywords);
+
+        // 1. Direct metadata query for exact clauses or tags (guarantees they are fetched)
         let directChunks = [];
-        if (clauseMatches.length > 0) {
+        const fetchTargets = [...clauseMatches, ...queryKeywords].slice(0, 10);
+        if (fetchTargets.length > 0) {
             try {
-                const directQuery = db.collection("chunks").where("clauses", "array-contains-any", clauseMatches);
-                const directSnap = await directQuery.get();
-                directSnap.forEach(doc => {
+                const directQuery1 = db.collection("chunks").where("clauses", "array-contains-any", fetchTargets);
+                const directQuery2 = db.collection("chunks").where("tags", "array-contains-any", fetchTargets);
+                
+                const [snap1, snap2] = await Promise.all([directQuery1.get(), directQuery2.get()]);
+                
+                snap1.forEach(doc => {
                     directChunks.push({ id: doc.id, ...doc.data() });
                 });
-                console.log(`Direct metadata query found ${directChunks.length} chunks matching:`, clauseMatches);
+                snap2.forEach(doc => {
+                    if (!directChunks.some(c => c.id === doc.id)) {
+                        directChunks.push({ id: doc.id, ...doc.data() });
+                    }
+                });
+                console.log(`Direct metadata query found ${directChunks.length} chunks matching targets:`, fetchTargets);
             } catch (err) {
-                console.error("Direct clause query error:", err);
+                console.error("Direct metadata query error:", err);
             }
         }
 
@@ -385,7 +418,7 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
         });
 
         allChunks.sort((a, b) => b.boostedSimilarity - a.boostedSimilarity);
-        let topChunks = allChunks.slice(0, 15);
+        let topChunks = allChunks.slice(0, 8);
 
         const topDoc = topChunks[0];
         const highestSimilarity = topDoc.boostedSimilarity || topDoc.rawSimilarity || 0.99;
@@ -396,7 +429,7 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
         if (highestSimilarity < 0.20) {
             try {
                 const completion = await getOpenAI().chat.completions.create({
-                    model: 'gpt-4o',
+                    model: 'gpt-4o-mini',
                     messages: [
                         {
                             role: 'system',
@@ -480,7 +513,7 @@ ${isHindiQuery ? "Write your entire response in Hindi (Devanagari script)." : ""
         }
 
         const completion = await getOpenAI().chat.completions.create({
-            model: 'gpt-4o',
+            model: 'gpt-4o-mini',
             messages: [
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: userPrompt }
@@ -674,6 +707,25 @@ exports.indexDocument = functions
                 }
                 const clauses = Array.from(clauseSet);
 
+                // Clean and tokenize chunk text to extract meaningful keywords for hybrid search
+                const keywordSet = new Set();
+                const chunkWords = chunkText.toLowerCase()
+                    .replace(/[.,?/()'"\[\]:|]/g, ' ')
+                    .split(/\s+/);
+                
+                const chunkStopwords = new Set([
+                    'what', 'is', 'the', 'of', 'for', 'under', 'in', 'to', 'and', 'or', 'a', 'an', 'this', 'that', 'these', 'those',
+                    'context', 'document', 'page', 'table', 'columns', 'ed', 'gm', 'agm', 'dgm', 'sm', 'powers', 'nil', 'upto'
+                ]);
+
+                for (const w of chunkWords) {
+                    const clean = w.trim();
+                    if (clean.length >= 3 && clean.length <= 15 && !chunkStopwords.has(clean) && !/^\d+$/.test(clean)) {
+                        keywordSet.add(clean);
+                    }
+                }
+                const tags = Array.from(keywordSet).slice(0, 50);
+
                 const embeddingResponse = await getOpenAI().embeddings.create({
                     model: "text-embedding-3-small",
                     input: prefixedText
@@ -685,6 +737,7 @@ exports.indexDocument = functions
                     pageNumber,
                     text: prefixedText,
                     clauses: clauses,
+                    tags: tags,
                     embedding: FieldValue.vector(embedding),
                     uploadDate: new Date()
                 });
