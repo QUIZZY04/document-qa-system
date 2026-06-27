@@ -377,7 +377,7 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
         });
         const queryEmbedding = queryEmbeddingResponse.data[0].embedding;
 
-        const clauseRegex = /(\b\d+\.\d+\b)|(?:\b(?:clause|cl|section|si|item|s\.no|no\.?|number)\s+(\d+)(?!\.\d)\b)/gi;
+        const clauseRegex = /\b(?:clause|cl|section|si|item|s\.no|no\.?|number)\s+(\d+\.\d+(?:\([a-z]\))?|\d+\s+[a-z]?|\d+(?:\([a-z]\))?|\d+)(?!\w)|(\b\d+\.\d+(?:\([a-z]\))?\b|\b\d+\([a-z]\)(?!\w))/gi;
         let clauseMatches = [], match;
         while ((match = clauseRegex.exec(normalizedQuestion)) !== null) {
             if (match[1]) clauseMatches.push(match[1]);
@@ -542,11 +542,15 @@ Format strictly as JSON: {"answer": "...", "clause": "-"}`
 - Their limit: ${authority.limitText}
 ${lowerReasons ? `- Cannot approve: ${lowerReasons}` : ''}
 
+CONTEXT FROM DOCUMENT (contains Remarks/Notes/Exceptions):
+${contextText}
+
 Instructions:
 1. Explain this in natural, friendly style. Use **bolding** for key terms. Write in multiple short paragraphs (double newlines).
+2. You MUST include and explain any critical exceptions, conditions, or instructions from the "Remarks" or "Notes" section of Clause ${clauseNum} in your explanation.
 ${isHindiQuery ? "Write the entire response in Hindi (Devanagari script), keeping exact names/limits/clause numbers bolded." : ""}
-2. End with a friendly follow-up question.
-3. Do not alter any numbers or authority names.
+3. End with a friendly follow-up question.
+4. Do not alter any numbers or authority names.
 Answer JSON:`;
         } else {
             systemPrompt = `You are an expert AI assistant for company policy documents.
@@ -557,7 +561,10 @@ CRITICAL INSTRUCTIONS:
 4. ED = Executive Director, GM = General Manager, AGM = Additional General Manager, DGM = Deputy General Manager, SM = Senior Manager.
 5. Respond with JSON: {"answer": "...", "clause": "..."}.
 6. Structure your response in multiple short, distinct paragraphs (double newlines). Use **bolding** for key terms.
-7. End with a friendly follow-up question.
+7. If the user asks about a general clause (e.g. Clause 15, Clause 4, Clause 10) and there are multiple sub-clauses (e.g. 15(a), 15(b) or 4.1, 4.2 or 10 A, 10 B) in the context, you MUST present a high-level summary of all sub-clauses and politely ask if they would like details on a specific sub-clause.
+8. If recommending or prompting for specific sub-clauses, you should output interactive HTML buttons inside your "answer" field for them, formatted exactly like: <button class="chat-opt-btn" onclick="selectSuggestion('tell me about clause 15(a)')">📖 Details for Clause 15(a)</button>.
+9. You MUST always take into account and include any "Remarks" or "Notes" associated with the clauses you are explaining, as they contain critical exceptions, limits, or conditions.
+10. End with a friendly follow-up question.
 ${isHindiQuery ? "Write your entire response in Hindi (Devanagari script)." : ""}`;
             userPrompt = `Context:\n${contextText}\n\nQuestion: ${question}\n\nAnswer JSON:`;
         }

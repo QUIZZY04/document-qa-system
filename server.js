@@ -121,50 +121,37 @@ function parseLimitToLakh(raw) {
 }
 
 function extractTargetAmountLakh(question) {
-    // Normalize Hindi terms to English equivalents for extraction
     const q = question.toLowerCase()
         .replace(/,/g, '')
         .replace(/(?:रुपये|रुपए|रुपया|रु\.?|रू\.?)/g, 'rs')
         .replace(/(?:लाख|ल\b)/g, 'lakh')
         .replace(/(?:करोड़|करोड|सीआर\b)/g, 'crore')
         .replace(/(?:क्लॉज|क्लाज|धारा)/g, 'clause');
-    
     const unitRegex = /(\d+(?:\.\d+)?)\s*(crore|cr|lakh|l)\b/gi;
     let match;
     unitRegex.lastIndex = 0;
     if ((match = unitRegex.exec(q)) !== null) {
         const val = parseFloat(match[1]);
         const unit = match[2].toLowerCase();
-        if (unit.startsWith('c')) {
-            return val * 100;
-        } else if (unit.startsWith('l')) {
-            return val;
-        }
+        return unit.startsWith('c') ? val * 100 : val;
     }
-    
     const rsRegex = /rs\.?\s*(\d+(?:\.\d+)?)\b/gi;
     rsRegex.lastIndex = 0;
     if ((match = rsRegex.exec(q)) !== null) {
         const val = parseFloat(match[1]);
-        if (val >= 10000) {
-            return val / 100000;
-        }
-        return val;
+        return val >= 10000 ? val / 100000 : val;
     }
-    
-    let temp = q;
-    const clauseRegex = /\b\d+\.\d+\b/g;
-    temp = temp.replace(clauseRegex, '');
-    
-    const anyNumRegex = /\b(\d+(?:\.\d+)?)\b/g;
-    if ((match = anyNumRegex.exec(temp)) !== null) {
+    // Only extract standalone numbers as amounts if they are large (>= 10000)
+    // This avoids extracting simple clause numbers (e.g. "clause 10") as amounts
+    let temp = q.replace(/\b\d+\.\d+\b/g, '');
+    const anyNumRegex = /\b(\d+)\b/g;
+    anyNumRegex.lastIndex = 0;
+    while ((match = anyNumRegex.exec(temp)) !== null) {
         const val = parseFloat(match[1]);
         if (val >= 10000) {
             return val / 100000;
         }
-        return val;
     }
-    
     return null;
 }
 
@@ -424,28 +411,66 @@ db.collection("documents").where("status", "==", "Processing")
                         }
                     }
                     
-                    // Simple page segmentation: split long pages if > 1500 chars
-                    const maxChunkLength = 1500;
+                    // Line-aware chunking to ensure rows/lines are not cut in half
                     let chunks = [];
-                    if (pageText.length > maxChunkLength) {
-                        // Split into two overlapping halves or chunks
-                        let startIndex = 0;
-                        while (startIndex < pageText.length) {
-                            const chunkText = pageText.substring(startIndex, startIndex + maxChunkLength);
-                            chunks.push(chunkText);
-                            startIndex += 1000; // 500 characters overlap
+                    let currentChunkLines = [];
+                    let currentLength = 0;
+                    const maxChunkLength = 1500;
+                    const overlapLines = 2; // Overlap of 2 lines for continuity
+
+                    for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+                        const line = lines[lineIdx];
+                        currentChunkLines.push(line);
+                        currentLength += line.length + 1; // +1 for newline
+
+                        if (currentLength >= maxChunkLength || lineIdx === lines.length - 1) {
+                            chunks.push(currentChunkLines.join('\n'));
+                            // Keep the last few lines for overlap
+                            const startIndex = Math.max(0, currentChunkLines.length - overlapLines);
+                            currentChunkLines = currentChunkLines.slice(startIndex);
+                            currentLength = currentChunkLines.reduce((acc, l) => acc + l.length + 1, 0);
                         }
-                    } else {
-                        chunks.push(pageText);
                     }
-                    
+
                     for (let j = 0; j < chunks.length; j++) {
                         const chunkText = chunks[j];
-                        
-                        // Prepend headers context to text for embedding rich search and accurate LLM answering
                         const prefixedText = `[Context - Document: ${docData.name} | Page: ${pageNumber} | Table Columns: ${currentHeaders}]\n${chunkText}`;
+                        
+                        // Extract clause numbers contained in this chunk for high-accuracy direct retrieval
+                        const clauseSet = new Set();
+                        const siRegex = /\[SI:\s*([^\]]+)\]/gi;
+                        let siMatch;
+                        siRegex.lastIndex = 0;
+                        while ((siMatch = siRegex.exec(chunkText)) !== null) {
+                            const val = siMatch[1].trim();
+                            const numMatch = val.match(/^(\d+(?:\.\d+)?)/);
+                            if (numMatch) {
+                                clauseSet.add(numMatch[1]);
+                            } else if (val.length < 15) {
+                                clauseSet.add(val.toLowerCase());
+                            }
+                        }
+                        const clauses = Array.from(clauseSet);
 
-                        // Call OpenAI Embeddings API with prefixed text
+                        // Clean and tokenize chunk text to extract meaningful keywords for hybrid search
+                        const keywordSet = new Set();
+                        const chunkWords = chunkText.toLowerCase()
+                            .replace(/[.,?/()'"\[\]:|]/g, ' ')
+                            .split(/\s+/);
+                        
+                        const chunkStopwords = new Set([
+                            'what', 'is', 'the', 'of', 'for', 'under', 'in', 'to', 'and', 'or', 'a', 'an', 'this', 'that', 'these', 'those',
+                            'context', 'document', 'page', 'table', 'columns', 'ed', 'gm', 'agm', 'dgm', 'sm', 'powers', 'nil', 'upto'
+                        ]);
+
+                        for (const w of chunkWords) {
+                            const clean = w.trim();
+                            if (clean.length >= 3 && clean.length <= 15 && !chunkStopwords.has(clean) && !/^\d+$/.test(clean)) {
+                                keywordSet.add(clean);
+                            }
+                        }
+                        const tags = Array.from(keywordSet).slice(0, 50);
+
                         const embeddingResponse = await openai.embeddings.create({
                             model: "text-embedding-3-small",
                             input: prefixedText
@@ -459,6 +484,8 @@ db.collection("documents").where("status", "==", "Processing")
                             docName: docData.name,
                             pageNumber: pageNumber,
                             text: prefixedText,
+                            clauses: clauses,
+                            tags: tags,
                             embedding: FieldValue.vector(embedding),
                             uploadDate: new Date()
                         });
@@ -480,10 +507,30 @@ db.collection("documents").where("status", "==", "Processing")
         console.error("Ingestion listener error:", error);
     });
 
-// Helper function to format answer text: converts markdown bold **text** to HTML <strong>text</strong>
 function formatAnswer(text) {
     if (!text) return "";
     return text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+}
+
+function extractKeywords(text) {
+    const stopwords = new Set([
+        'what', 'is', 'the', 'of', 'for', 'under', 'who', 'approving', 'authority', 'clause',
+        'does', 'stand', 'how', 'can', 'i', 'help', 'you', 'today', 'are', 'some',
+        'options', 'explore', 'check', 'rs', 'lakh', 'crore', 'in', 'to', 'and', 'or', 'a',
+        'an', 'this', 'that', 'these', 'those', 'where', 'when', 'why', 'which', 'about', 'from',
+        'document', 'documents', 'manual', 'manuals', 'policy', 'policies'
+    ]);
+    const words = text.toLowerCase()
+        .replace(/[.,?/()'"\[\]:|]/g, ' ')
+        .split(/\s+/);
+    const keywords = [];
+    for (const w of words) {
+        const clean = w.trim();
+        if (clean.length > 2 && !stopwords.has(clean) && !/^\d+$/.test(clean)) {
+            keywords.push(clean);
+        }
+    }
+    return keywords;
 }
 
 // Search API Endpoint: /ask
@@ -496,7 +543,7 @@ app.post('/ask', async (req, res) => {
     
     // Detect if the query is in Hindi (either via Devanagari script range or transliterated keywords)
     const isHindiQuery = /[\u0900-\u097F]/.test(question) || 
-                         /\b(kaun|kya|kab|kaise|kis|kiske|kiski|kiska|hai|hain|ko|se|mein|me|par|ke|ki|ka|liye|tha|the|thi|raha|rahe|rahi|hoga|hoge|hogi|batao|bataiye|samjhaye|samjhao|chahiye|kar|sakte|sakta|sakti)\b/i.test(question);
+                         /\b(kaun|kya|kab|kaise|kis|kiske|kiski|kiska|hai|hain|ko|se|mein|par|ke|ki|ka|liye|tha|thi|raha|rahe|rahi|hoga|hoge|hogi|batao|bataiye|samjhaye|samjhao|chahiye|kar|sakte|sakta|sakti)\b/i.test(question);
 
     const optionsEnglish = `\n\nHere are some options you can explore:
 <button class="chat-opt-btn" onclick="selectSuggestion('Who is approving authority under DOP clause 4.3 for Rs 2600000')">📊 Who is approving authority under DOP clause 4.3 for Rs 26 lakh?</button>
@@ -596,18 +643,41 @@ Feel free to click any of these options or ask your own question!`;
         });
         const queryEmbedding = queryEmbeddingResponse.data[0].embedding;
         
-        // Extract section/clause numbers
-        const clauseRegex = /(\b\d+\.\d+\b)|(?:\b(?:clause|cl|section|si|item|s\.no|no\.?|number)\s+(\d+)(?!\.\d)\b)/gi;
-        let clauseMatches = [];
-        let match;
+        // Extract section/clause numbers with parenthetical matching
+        const clauseRegex = /\b(?:clause|cl|section|si|item|s\.no|no\.?|number)\s+(\d+\.\d+(?:\([a-z]\))?|\d+\s+[a-z]?|\d+(?:\([a-z]\))?|\d+)(?!\w)|(\b\d+\.\d+(?:\([a-z]\))?\b|\b\d+\([a-z]\)(?!\w))/gi;
+        let clauseMatches = [], match;
         while ((match = clauseRegex.exec(normalizedQuestion)) !== null) {
-            if (match[1]) {
-                clauseMatches.push(match[1]); // e.g. "4.3"
-            } else if (match[2]) {
-                clauseMatches.push(match[2]); // e.g. "19"
-            }
+            if (match[1]) clauseMatches.push(match[1]);
+            else if (match[2]) clauseMatches.push(match[2]);
         }
         console.log(`Extracted clause numbers from query:`, clauseMatches);
+
+        const queryKeywords = extractKeywords(question);
+        console.log(`Extracted query keywords:`, queryKeywords);
+
+        // Direct metadata query for exact clauses or tags (guarantees they are fetched)
+        let directChunks = [];
+        const fetchTargets = [...clauseMatches, ...queryKeywords].slice(0, 10);
+        if (fetchTargets.length > 0) {
+            try {
+                const directQuery1 = db.collection("chunks").where("clauses", "array-contains-any", fetchTargets);
+                const directQuery2 = db.collection("chunks").where("tags", "array-contains-any", fetchTargets);
+                
+                const [snap1, snap2] = await Promise.all([directQuery1.get(), directQuery2.get()]);
+                
+                snap1.forEach(doc => {
+                    directChunks.push({ id: doc.id, ...doc.data() });
+                });
+                snap2.forEach(doc => {
+                    if (!directChunks.some(c => c.id === doc.id)) {
+                        directChunks.push({ id: doc.id, ...doc.data() });
+                    }
+                });
+                console.log(`Direct metadata query found ${directChunks.length} chunks matching targets:`, fetchTargets);
+            } catch (err) {
+                console.error("Direct metadata query error:", err);
+            }
+        }
 
         // 2. Perform native vector search using findNearest (expanded limit to 150 to allow reranking)
         const query = db.collection("chunks").findNearest({
@@ -618,7 +688,7 @@ Feel free to click any of these options or ask your own question!`;
         });
 
         const chunksSnap = await query.get();
-        if (chunksSnap.empty) {
+        if (chunksSnap.empty && directChunks.length === 0) {
             return res.json({
                 answer: formatAnswer(isHindiQuery 
                     ? "अभी तक कोई दस्तावेज़ अपलोड या अनुक्रमित नहीं किया गया है। कृपया एडमिन पैनल पर जाएं और पीडीएफ अपलोड करें।" 
@@ -630,16 +700,30 @@ Feel free to click any of these options or ask your own question!`;
             });
         }
         
+        // Merge vector and direct search results, removing duplicates
+        const mergedChunksMap = new Map();
+        directChunks.forEach(c => {
+            mergedChunksMap.set(c.id, c);
+        });
+        chunksSnap.forEach(doc => {
+            if (!mergedChunksMap.has(doc.id)) {
+                mergedChunksMap.set(doc.id, { id: doc.id, ...doc.data() });
+            }
+        });
+
         // 3. Build all chunks with cosine similarity and keyword boosting
         let allChunks = [];
-        chunksSnap.forEach((doc) => {
-            const chunkData = doc.data();
+        mergedChunksMap.forEach((chunkData) => {
             const vec = chunkData.embedding ? chunkData.embedding.toArray() : [];
             const similarity = vec.length > 0 ? cosineSimilarity(queryEmbedding, vec) : 0;
             
             // Check if chunk text contains any of the clause numbers from the query in a clause prefix format
             let isExactClauseMatch = false;
             for (const clauseNum of clauseMatches) {
+                if (chunkData.clauses && chunkData.clauses.includes(clauseNum)) {
+                    isExactClauseMatch = true;
+                    break;
+                }
                 if (chunkData.text) {
                     const cleanText = chunkData.text;
                     const siRegex = new RegExp(`\\[SI:\\s*${clauseNum.replace('.', '\\.')}[\\s\\].(]`, 'i');
@@ -681,7 +765,7 @@ Feel free to click any of these options or ask your own question!`;
         
         console.log(`Top chunk: raw=${topDoc.rawSimilarity?.toFixed(4)}, boosted=${topDoc.boostedSimilarity?.toFixed(4)}, exactClauseMatch=${topDoc.isExactClauseMatch} -> confidence: ${confidencePercentage}%`);
         
-        if (highestSimilarity < 0.25) {
+        if (highestSimilarity < 0.20) {
             try {
                 const completion = await openai.chat.completions.create({
                     model: 'gpt-4o',
@@ -768,54 +852,39 @@ Format your response strictly as JSON: {"answer": "...", "clause": "-"}`
                 .join(', ');
 
             systemPrompt = `You are a helpful, conversational document assistant. Write a warm, friendly, and clear answer in natural user-friendly language using ONLY the facts provided. Do NOT alter any name, limit, or amount. Respond with JSON: {"answer": "...", "clause": "Clause ${clauseNum}"}`;
-
             userPrompt = `VERIFIED FACTS:
 - Clause: ${clauseNum} — ${clauseRow.Nature || 'Delegation of Powers'}
-- Query amount: ${targetDisplay} (Rs. ${Math.round(tl * 100000).toLocaleString('en-IN')})
+- Query amount: ${targetDisplay}
 - Delegation limits for Clause ${clauseNum}: ${limitTable}
 - COMPETENT AUTHORITY: ${authority.name}
 - Their limit: ${authority.limitText}
 ${lowerReasons ? `- Cannot approve: ${lowerReasons}` : ''}
 
-Instructions:
-1. Explain this to the user in a natural, friendly, and conversational style (general user language).
-   Use **bolding** to highlight important words (e.g., specific clause number, the competent authority name like **${authority.name}**, amounts like **${targetDisplay}**, etc.).
-   Structure the response using multiple short, clear paragraphs (separated by double newlines '\\n\\n') so that it is easy to read. Do NOT put the explanation and limits into a single paragraph block.
-   ${isHindiQuery ? `Since the user is asking in Hindi/Hinglish, write the entire explanation and response in Hindi (using Devanagari script). Translate the explanation naturally but keep exact names/limits/amounts/clause numbers as they are, but bolded (e.g., क्लॉज **${clauseNum}**, **${authority.name}**, **${tl} lakh**, etc.). Example layout in Hindi:
-   "क्लॉज **${clauseNum}** के तहत **${clauseRow.Nature || 'Delegation of Powers'}** के लिए, सक्षम प्राधिकारी **${authority.name}** हैं। वे **${authority.limitText}** तक के मूल्यों को मंजूरी दे सकते हैं।
-   
-   चूंकि आपकी अनुरोधित राशि **${targetDisplay}** उनकी सीमा के भीतर है, वे इसे मंजूरी दे सकते हैं।
-   
-   निचले स्तर जैसे ${lowerReasons ? lowerReasons : 'कोई नहीं'} के पास इस राशि के लिए पर्याप्त शक्तियां नहीं हैं।"` : `Example layout:
-   "Under Clause **${clauseNum}** for **${clauseRow.Nature || 'Delegation of Powers'}**, the competent approving authority is the **${authority.name}**. They can approve values **${authority.limitText}**.
-   
-   Since your requested amount of **${targetDisplay}** is within their limit, they can approve it.
-   
-   Lower levels like ${lowerReasons ? lowerReasons : 'none'} do not have sufficient powers for this amount."`}
-2. ALWAYS end your response by asking the user a friendly, relevant follow-up question to engage and interact (e.g. asking if they want to check another amount, check another clause, or see definition details). Write this follow-up question in a separate, final paragraph. ${isHindiQuery ? "Write this follow-up question in Hindi." : ""}
-3. Do not alter any numbers or authority names in your explanation.
+CONTEXT FROM DOCUMENT (contains Remarks/Notes/Exceptions):
+${contextText}
 
+Instructions:
+1. Explain this in natural, friendly style. Use **bolding** for key terms. Write in multiple short paragraphs (double newlines).
+2. You MUST include and explain any critical exceptions, conditions, or instructions from the "Remarks" or "Notes" section of Clause ${clauseNum} in your explanation.
+${isHindiQuery ? "Write the entire response in Hindi (Devanagari script), keeping exact names/limits/clause numbers bolded." : ""}
+3. End with a friendly follow-up question.
+4. Do not alter any numbers or authority names.
 Answer JSON:`;
 
         } else {
             systemPrompt = `You are an expert AI assistant for company policy documents.
 CRITICAL INSTRUCTIONS FOR 100% ACCURACY, READABILITY, AND NO HALLUCINATIONS:
 1. Grounding: Answer the question using ONLY the facts explicitly stated in the provided context blocks. Do not assume, extrapolate, or bring in outside information.
-2. No Hallucinations: If the context blocks do not contain the answer, or if there is insufficient information to answer the question with absolute certainty, respond with: "I couldn't find the answer in the provided documents."
-3. Exact Match: Do not alter any clause numbers, numbers, amounts, percentages, names, or quotes. They must be copied exactly from the context if mentioned in the answer.
+2. No Hallucinations: If the context doesn't contain the answer, say "I couldn't find the answer in the provided documents."
+3. Exact Match: Do not alter any clause numbers, numbers, amounts, percentages, names, or quotes. They must be copied exactly from the context.
 4. Abbreviations: ED = Executive Director, GM = General Manager, AGM = Additional General Manager, DGM = Deputy General Manager, SM = Senior Manager.
 5. Format: Respond with JSON format strictly: {"answer": "...", "clause": "..."}. Fill "clause" with the specific clause number found (e.g. "Clause 3.1" or "Clause 4.3") or "General" if not specified.
-6. Tone: Keep the answer clear, user-friendly, and conversational (general user language) rather than dense legalese, while strictly preserving all numbers, names, and facts.
-7. Interaction: End your response by asking the user a friendly, contextual follow-up question related to their query to engage them.
-8. Parent/Sub-Clauses: If the user asks about a parent clause (e.g. Clause 20, Clause 17, Clause 18, Clause 4) and the context contains its sub-clauses (e.g. 20.1, 20.2, 17.1, 4.3), treat the sub-clauses as part of the query and summarize/list their limits and details as the answer. Do not say you couldn't find the answer.
-9. Paragraphs and Formatting: Present your response in multiple distinct, clear paragraphs (separated by double newlines '\\n\\n') to improve readability. You MUST split the content into multiple paragraphs.
-   For example:
-   - Paragraph 1: Direct answer to the question (what is covered, or direct fact).
-   - Paragraph 2: Specific authority levels, limits, or breakdown details (such as descriptions of who can approve what).
-   - Paragraph 3: Follow-up question to the user.
-   Do NOT write one single large block of text. If you are listing limits for multiple authority levels, separate the list/description from the introductory clause coverage sentence into a new paragraph.
-10. Bolding: Highlight key names, limits, amounts, authorities, and clause numbers using markdown **bolding** to draw user focus.
-${isHindiQuery ? `11. Multilingual: Since the user query is in Hindi/Hinglish, write your response in Hindi (using Devanagari script). Translate the details and explanation to Hindi naturally, but keep numbers, limits, amounts, and specific names of clauses/authorities accurate and formatted using **bolding**. Split the Hindi response into multiple distinct paragraphs separated by double newlines '\\n\\n'.` : ``}`;
+6. Paragraphs and Formatting: Structure your response in multiple short, distinct paragraphs (separated by double newlines '\\n\\n') to improve readability. Use markdown **bolding** for key terms.
+7. General/Parent/Sub-Clauses: If the user asks about a general clause (e.g. Clause 15, Clause 4, Clause 10) and there are multiple sub-clauses (e.g. 15(a), 15(b) or 4.1, 4.2 or 10 A, 10 B) in the context, you MUST present a high-level summary of all sub-clauses and politely ask if they would like details on a specific sub-clause.
+8. Interactive Buttons: If recommending or prompting for specific sub-clauses, you should output interactive HTML buttons inside your "answer" field for them, formatted exactly like: <button class="chat-opt-btn" onclick="selectSuggestion('tell me about clause 15(a)')">📖 Details for Clause 15(a)</button>.
+9. Remarks and Notes: You MUST always take into account and include any "Remarks" or "Notes" associated with the clauses you are explaining, as they contain critical exceptions, limits, or conditions.
+10. End with a friendly follow-up question.
+${isHindiQuery ? "Write your entire response in Hindi (Devanagari script)." : ""}`;
 
             userPrompt = `Context:\n${contextText}\n\nQuestion: ${question}\n\nAnswer JSON:`;
         }
