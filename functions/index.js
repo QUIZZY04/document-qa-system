@@ -11,7 +11,7 @@ const cors = require("cors");
 const openaiApiKey = defineSecret("OPENAI_API_KEY");
 
 // Runtime options for heavy functions
-const runtimeOpts = { timeoutSeconds: 300, memory: '1GB', secrets: ['OPENAI_API_KEY'] };
+const runtimeOpts = { timeoutSeconds: 300, memory: '2GB', secrets: ['OPENAI_API_KEY'] };
 
 // Initialize Firebase Admin (no credentials needed inside Cloud Functions!)
 admin.initializeApp();
@@ -371,12 +371,6 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
             .replace(/(?:करोड़|करोड|सीआर\b)/g, 'crore')
             .replace(/(?:क्लॉज|क्लाज|धारा)/g, 'clause');
 
-        const queryEmbeddingResponse = await getOpenAI().embeddings.create({
-            model: "text-embedding-3-small",
-            input: question
-        });
-        const queryEmbedding = queryEmbeddingResponse.data[0].embedding;
-
         const clauseRegex = /\b(?:clause|cl|section|si|item|s\.no|no\.?|number)\s+(\d+\.\d+(?:\([a-z]\))?|\d+\s+[a-z]?|\d+(?:\([a-z]\))?|\d+)(?!\w)|(\b\d+\.\d+(?:\([a-z]\))?\b|\b\d+\([a-z]\)(?!\w))/gi;
         let clauseMatches = [], match;
         while ((match = clauseRegex.exec(normalizedQuestion)) !== null) {
@@ -388,121 +382,147 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
         const queryKeywords = extractKeywords(question);
         console.log(`Extracted query keywords:`, queryKeywords);
 
-        // 1. Direct metadata query for exact clauses or tags (guarantees they are fetched)
+        // 1. Try to fetch direct exact clause matches first to bypass embedding latency
         let directChunks = [];
-        const fetchTargets = [...clauseMatches, ...queryKeywords].slice(0, 10);
-        if (fetchTargets.length > 0) {
+        const clauseTargets = [...clauseMatches].slice(0, 5);
+        if (clauseTargets.length > 0) {
             try {
-                const directQuery1 = db.collection("chunks").where("clauses", "array-contains-any", fetchTargets);
-                const directQuery2 = db.collection("chunks").where("tags", "array-contains-any", fetchTargets);
-                
-                const [snap1, snap2] = await Promise.all([directQuery1.get(), directQuery2.get()]);
-                
+                const directQuery1 = db.collection("chunks").where("clauses", "array-contains-any", clauseTargets);
+                const snap1 = await directQuery1.get();
                 snap1.forEach(doc => {
                     directChunks.push({ id: doc.id, ...doc.data() });
                 });
-                snap2.forEach(doc => {
-                    if (!directChunks.some(c => c.id === doc.id)) {
-                        directChunks.push({ id: doc.id, ...doc.data() });
-                    }
-                });
-                console.log(`Direct metadata query found ${directChunks.length} chunks matching targets:`, fetchTargets);
+                console.log(`Direct metadata query found ${directChunks.length} chunks matching clauses:`, clauseTargets);
             } catch (err) {
                 console.error("Direct metadata query error:", err);
             }
         }
 
-        // 2. Vector search query
-        const query = db.collection("chunks").findNearest({
-            vectorField: 'embedding',
-            queryVector: queryEmbedding,
-            limit: 150,
-            distanceMeasure: 'COSINE'
-        });
+        let topChunks = [];
+        let confidencePercentage = 100;
+        let highestSimilarity = 1.0;
 
-        const chunksSnap = await query.get();
-        if (chunksSnap.empty && directChunks.length === 0) {
-            return res.json({
-                answer: formatAnswer(isHindiQuery
-                    ? "अभी तक कोई दस्तावेज़ अपलोड या अनुक्रमित नहीं किया गया है। कृपया एडमिन पैनल पर जाएं और पीडीएफ अपलोड करें।"
-                    : "No documents have been uploaded or indexed yet. Please go to the admin panel and upload PDFs."),
-                sourcePdf: "-", pageNumber: "-", confidence: "-", clause: "-"
+        if (directChunks.length > 0) {
+            // We have direct exact matches! Bypass generating query embedding.
+            let allChunks = directChunks.map(chunkData => ({
+                ...chunkData,
+                rawSimilarity: 1.0,
+                boostedSimilarity: 1.0,
+                isExactClauseMatch: true
+            }));
+            allChunks.sort((a, b) => a.pageNumber - b.pageNumber);
+            topChunks = allChunks.slice(0, 8);
+            console.log(`Bypassed embedding creation. Using ${topChunks.length} direct clause chunks.`);
+        } else {
+            // Fallback: Generate query embedding and perform vector search
+            console.log("No direct clause matches. Generating query embedding for vector search...");
+            const queryEmbeddingResponse = await getOpenAI().embeddings.create({
+                model: "text-embedding-3-small",
+                input: question
             });
-        }
+            const queryEmbedding = queryEmbeddingResponse.data[0].embedding;
 
-        // 3. Merge vector and direct search results, removing duplicates
-        const mergedChunksMap = new Map();
-        directChunks.forEach(c => {
-            mergedChunksMap.set(c.id, c);
-        });
-        chunksSnap.forEach(doc => {
-            if (!mergedChunksMap.has(doc.id)) {
-                mergedChunksMap.set(doc.id, { id: doc.id, ...doc.data() });
-            }
-        });
-
-        // 4. Calculate similarity and apply boosting for exact matches
-        let allChunks = [];
-        mergedChunksMap.forEach((chunkData) => {
-            const vec = chunkData.embedding ? chunkData.embedding.toArray() : [];
-            const similarity = vec.length > 0 ? cosineSimilarity(queryEmbedding, vec) : 0;
-            let isExactClauseMatch = false;
-
-            for (const clauseNum of clauseMatches) {
-                // Boost if the chunk metadata explicitly lists the clause or matches text regex
-                if (chunkData.clauses && chunkData.clauses.includes(clauseNum)) {
-                    isExactClauseMatch = true;
-                    break;
+            let keywordChunks = [];
+            const keywordTargets = [...queryKeywords].slice(0, 10);
+            if (keywordTargets.length > 0) {
+                try {
+                    const directQuery2 = db.collection("chunks").where("tags", "array-contains-any", keywordTargets);
+                    const snap2 = await directQuery2.get();
+                    snap2.forEach(doc => {
+                        keywordChunks.push({ id: doc.id, ...doc.data() });
+                    });
+                } catch (err) {
+                    console.error("Keyword metadata query error:", err);
                 }
-                if (chunkData.text) {
-                    const siRegex = new RegExp(`\\[SI:\\s*${clauseNum.replace('.', '\\.')}[\\s\\].(]`, 'i');
-                    const wordRegex = new RegExp(`\\b${clauseNum.replace('.', '\\.')}\\.\\b`, 'i');
-                    if (siRegex.test(chunkData.text) || wordRegex.test(chunkData.text)) {
+            }
+
+            const query = db.collection("chunks").findNearest({
+                vectorField: 'embedding',
+                queryVector: queryEmbedding,
+                limit: 150,
+                distanceMeasure: 'COSINE'
+            });
+
+            const chunksSnap = await query.get();
+            if (chunksSnap.empty && keywordChunks.length === 0) {
+                return res.json({
+                    answer: formatAnswer(isHindiQuery
+                        ? "अभी तक कोई दस्तावेज़ अपलोड या अनुक्रमित नहीं किया गया है। कृपया एडमिन पैनल पर जाएं और पीडीएफ अपलोड करें।"
+                        : "No documents have been uploaded or indexed yet. Please go to the admin panel and upload PDFs."),
+                    sourcePdf: "-", pageNumber: "-", confidence: "-", clause: "-"
+                });
+            }
+
+            const mergedChunksMap = new Map();
+            keywordChunks.forEach(c => {
+                mergedChunksMap.set(c.id, c);
+            });
+            chunksSnap.forEach(doc => {
+                if (!mergedChunksMap.has(doc.id)) {
+                    mergedChunksMap.set(doc.id, { id: doc.id, ...doc.data() });
+                }
+            });
+
+            let allChunks = [];
+            mergedChunksMap.forEach((chunkData) => {
+                const vec = chunkData.embedding ? chunkData.embedding.toArray() : [];
+                const similarity = vec.length > 0 ? cosineSimilarity(queryEmbedding, vec) : 0;
+                let isExactClauseMatch = false;
+
+                for (const clauseNum of clauseMatches) {
+                    if (chunkData.clauses && chunkData.clauses.includes(clauseNum)) {
                         isExactClauseMatch = true;
                         break;
                     }
+                    if (chunkData.text) {
+                        const siRegex = new RegExp(`\\[SI:\\s*${clauseNum.replace('.', '\\.')}[\\s\\].(]`, 'i');
+                        const wordRegex = new RegExp(`\\b${clauseNum.replace('.', '\\.')}\\.\\b`, 'i');
+                        if (siRegex.test(chunkData.text) || wordRegex.test(chunkData.text)) {
+                            isExactClauseMatch = true;
+                            break;
+                        }
+                    }
                 }
-            }
-            const boostedSimilarity = isExactClauseMatch ? similarity + 0.35 : similarity;
-            allChunks.push({ ...chunkData, rawSimilarity: similarity, boostedSimilarity, isExactClauseMatch });
-        });
+                const boostedSimilarity = isExactClauseMatch ? similarity + 0.35 : similarity;
+                allChunks.push({ ...chunkData, rawSimilarity: similarity, boostedSimilarity, isExactClauseMatch });
+            });
 
-        allChunks.sort((a, b) => b.boostedSimilarity - a.boostedSimilarity);
-        let topChunks = allChunks.slice(0, 8);
+            allChunks.sort((a, b) => b.boostedSimilarity - a.boostedSimilarity);
+            topChunks = allChunks.slice(0, 8);
 
-        const topDoc = topChunks[0];
-        const highestSimilarity = topDoc.boostedSimilarity || topDoc.rawSimilarity || 0.99;
-        let confidencePercentage = topDoc.isExactClauseMatch ? 100 : scaleConfidence(highestSimilarity);
-        console.log(`Top chunk: raw=${topDoc.rawSimilarity?.toFixed(4)}, boosted=${topDoc.boostedSimilarity?.toFixed(4)}, exactClauseMatch=${topDoc.isExactClauseMatch} -> confidence: ${confidencePercentage}%`);
+            const topDoc = topChunks[0];
+            highestSimilarity = topDoc.boostedSimilarity || topDoc.rawSimilarity || 0.99;
+            confidencePercentage = topDoc.isExactClauseMatch ? 100 : scaleConfidence(highestSimilarity);
+            console.log(`Top chunk: raw=${topDoc.rawSimilarity?.toFixed(4)}, boosted=${topDoc.boostedSimilarity?.toFixed(4)}, exactClauseMatch=${topDoc.isExactClauseMatch} -> confidence: ${confidencePercentage}%`);
 
-        // Lower threshold from 0.25 to 0.20 to be more permissive with general questions
-        if (highestSimilarity < 0.20) {
-            try {
-                const completion = await getOpenAI().chat.completions.create({
-                    model: 'gpt-4o-mini',
-                    messages: [
-                        {
-                            role: 'system',
-                            content: `You are a helpful, conversational AI Assistant for company policy documents.
+            if (highestSimilarity < 0.20) {
+                try {
+                    const completion = await getOpenAI().chat.completions.create({
+                        model: 'gpt-4o-mini',
+                        messages: [
+                            {
+                                role: 'system',
+                                content: `You are a helpful, conversational AI Assistant for company policy documents.
 The user is asking something that could not be matched with high confidence to the uploaded manuals.
 Reply naturally and politely. If off-topic, guide them back to the policy documents.
 Structure your response in multiple short paragraphs. Use markdown **bolding** to highlight key terms.
 ${isHindiQuery ? "Write your entire response in Hindi (using Devanagari script)." : ""}
 Format strictly as JSON: {"answer": "...", "clause": "-"}`
-                        },
-                        { role: 'user', content: question }
-                    ],
-                    response_format: { type: 'json_object' },
-                    temperature: 0.7
-                });
-                const responseData = JSON.parse(completion.choices[0].message.content);
-                const answerText = responseData.answer + (isHindiQuery ? optionsHindi : optionsEnglish);
-                return res.json({ answer: formatAnswer(answerText), sourcePdf: "-", pageNumber: "-", confidence: "Low", clause: "-" });
-            } catch (err) {
-                return res.json({
-                    answer: formatAnswer((isHindiQuery ? "मुझे अपलोड किए गए मैनुअल में उत्तर नहीं मिला।" : "I couldn't find relevant sections in the uploaded manuals.") + (isHindiQuery ? optionsHindi : optionsEnglish)),
-                    sourcePdf: "-", pageNumber: "-", confidence: "Low", clause: "-"
-                });
+                            },
+                            { role: 'user', content: question }
+                        ],
+                        response_format: { type: 'json_object' },
+                        temperature: 0.7
+                    });
+                    const responseData = JSON.parse(completion.choices[0].message.content);
+                    const answerText = responseData.answer + (isHindiQuery ? optionsHindi : optionsEnglish);
+                    return res.json({ answer: formatAnswer(answerText), sourcePdf: "-", pageNumber: "-", confidence: "Low", clause: "-" });
+                } catch (err) {
+                    return res.json({
+                        answer: formatAnswer((isHindiQuery ? "मुझे अपलोड किए गए मैनुअल में उत्तर नहीं मिला।" : "I couldn't find relevant sections in the uploaded manuals.") + (isHindiQuery ? optionsHindi : optionsEnglish)),
+                        sourcePdf: "-", pageNumber: "-", confidence: "Low", clause: "-"
+                    });
+                }
             }
         }
 
@@ -533,7 +553,7 @@ Format strictly as JSON: {"answer": "...", "clause": "-"}`
             const lowerLevels = AUTHORITY_ORDER.slice(0, AUTHORITY_ORDER.indexOf(authority.key));
             const lowerReasons = lowerLevels.filter(k => clauseRow[k] && parseLimitToLakh(clauseRow[k]) < tl)
                 .map(k => `${AUTHORITY_NAMES[k]} (limit: ${clauseRow[k]})`).join(', ');
-            systemPrompt = `You are a helpful, conversational document assistant. Write a warm, friendly, and clear answer in natural user-friendly language using ONLY the facts provided. Do NOT alter any name, limit, or amount. Respond with JSON: {"answer": "...", "clause": "Clause ${clauseNum}"}`;
+            systemPrompt = `You are a helpful, conversational document assistant. Write a warm, friendly, clear, and concise answer in natural user-friendly language using ONLY the facts provided. Keep your response direct and under 150 words. Do NOT alter any name, limit, or amount. Respond with JSON: {"answer": "...", "clause": "Clause ${clauseNum}"}`;
             userPrompt = `VERIFIED FACTS:
 - Clause: ${clauseNum} — ${clauseRow.Nature || 'Delegation of Powers'}
 - Query amount: ${targetDisplay}
@@ -546,7 +566,7 @@ CONTEXT FROM DOCUMENT (contains Remarks/Notes/Exceptions):
 ${contextText}
 
 Instructions:
-1. Explain this in natural, friendly style. Use **bolding** for key terms. Write in multiple short paragraphs (double newlines).
+1. Explain this in natural, friendly style. Keep it concise (under 150 words). Use **bolding** for key terms. Write in multiple short paragraphs (double newlines).
 2. You MUST include and explain any critical exceptions, conditions, or instructions from the "Remarks" or "Notes" section of Clause ${clauseNum} in your explanation.
 ${isHindiQuery ? "Write the entire response in Hindi (Devanagari script), keeping exact names/limits/clause numbers bolded." : ""}
 3. End with a friendly follow-up question.
@@ -555,12 +575,12 @@ Answer JSON:`;
         } else {
             systemPrompt = `You are an expert AI assistant for company policy documents.
 CRITICAL INSTRUCTIONS:
-1. Answer using ONLY facts from the provided context blocks.
+1. Answer using ONLY facts from the provided context blocks. Keep your response concise, clear, and under 150 words.
 2. If the context doesn't contain the answer, say "I couldn't find the answer in the provided documents."
 3. Do NOT alter clause numbers, amounts, names, or quotes.
 4. ED = Executive Director, GM = General Manager, AGM = Additional General Manager, DGM = Deputy General Manager, SM = Senior Manager.
 5. Respond with JSON: {"answer": "...", "clause": "..."}.
-6. Structure your response in multiple short, distinct paragraphs (double newlines). Use **bolding** for key terms.
+6. Structure your response in multiple short, distinct paragraphs (double newlines). Keep it under 150 words. Use **bolding** for key terms.
 7. If the user asks about a general clause (e.g. Clause 15, Clause 4, Clause 10) and there are multiple sub-clauses (e.g. 15(a), 15(b) or 4.1, 4.2 or 10 A, 10 B) in the context, you MUST present a high-level summary of all sub-clauses and politely ask if they would like details on a specific sub-clause.
 8. If recommending or prompting for specific sub-clauses, you should output interactive HTML buttons inside your "answer" field for them, formatted exactly like: <button class="chat-opt-btn" onclick="selectSuggestion('tell me about clause 15(a)')">📖 Details for Clause 15(a)</button>.
 9. You MUST always take into account and include any "Remarks" or "Notes" associated with the clauses you are explaining, as they contain critical exceptions, limits, or conditions.

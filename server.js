@@ -563,7 +563,7 @@ app.post('/ask', async (req, res) => {
     if (isGreeting) {
         try {
             const completion = await openai.chat.completions.create({
-                model: 'gpt-4o',
+                model: 'gpt-4o-mini',
                 messages: [
                     {
                         role: 'system',
@@ -636,13 +636,6 @@ Feel free to click any of these options or ask your own question!`;
             .replace(/(?:करोड़|करोड|सीआर\b)/g, 'crore')
             .replace(/(?:क्लॉज|क्लाज|धारा)/g, 'clause');
         
-        // 1. Generate query embedding
-        const queryEmbeddingResponse = await openai.embeddings.create({
-            model: "text-embedding-3-small",
-            input: question
-        });
-        const queryEmbedding = queryEmbeddingResponse.data[0].embedding;
-        
         // Extract section/clause numbers with parenthetical matching
         const clauseRegex = /\b(?:clause|cl|section|si|item|s\.no|no\.?|number)\s+(\d+\.\d+(?:\([a-z]\))?|\d+\s+[a-z]?|\d+(?:\([a-z]\))?|\d+)(?!\w)|(\b\d+\.\d+(?:\([a-z]\))?\b|\b\d+\([a-z]\)(?!\w))/gi;
         let clauseMatches = [], match;
@@ -655,124 +648,141 @@ Feel free to click any of these options or ask your own question!`;
         const queryKeywords = extractKeywords(question);
         console.log(`Extracted query keywords:`, queryKeywords);
 
-        // Direct metadata query for exact clauses or tags (guarantees they are fetched)
+        // 1. Try to fetch direct exact clause matches first to bypass embedding latency
         let directChunks = [];
-        const fetchTargets = [...clauseMatches, ...queryKeywords].slice(0, 10);
-        if (fetchTargets.length > 0) {
+        const clauseTargets = [...clauseMatches].slice(0, 5);
+        if (clauseTargets.length > 0) {
             try {
-                const directQuery1 = db.collection("chunks").where("clauses", "array-contains-any", fetchTargets);
-                const directQuery2 = db.collection("chunks").where("tags", "array-contains-any", fetchTargets);
-                
-                const [snap1, snap2] = await Promise.all([directQuery1.get(), directQuery2.get()]);
-                
+                const directQuery1 = db.collection("chunks").where("clauses", "array-contains-any", clauseTargets);
+                const snap1 = await directQuery1.get();
                 snap1.forEach(doc => {
                     directChunks.push({ id: doc.id, ...doc.data() });
                 });
-                snap2.forEach(doc => {
-                    if (!directChunks.some(c => c.id === doc.id)) {
-                        directChunks.push({ id: doc.id, ...doc.data() });
-                    }
-                });
-                console.log(`Direct metadata query found ${directChunks.length} chunks matching targets:`, fetchTargets);
+                console.log(`Direct metadata query found ${directChunks.length} chunks matching clauses:`, clauseTargets);
             } catch (err) {
                 console.error("Direct metadata query error:", err);
             }
         }
 
-        // 2. Perform native vector search using findNearest (expanded limit to 150 to allow reranking)
-        const query = db.collection("chunks").findNearest({
-            vectorField: 'embedding',
-            queryVector: queryEmbedding,
-            limit: 150,
-            distanceMeasure: 'COSINE'
-        });
+        let topChunks = [];
+        let confidencePercentage = 100;
+        let highestSimilarity = 1.0;
 
-        const chunksSnap = await query.get();
-        if (chunksSnap.empty && directChunks.length === 0) {
-            return res.json({
-                answer: formatAnswer(isHindiQuery 
-                    ? "अभी तक कोई दस्तावेज़ अपलोड या अनुक्रमित नहीं किया गया है। कृपया एडमिन पैनल पर जाएं और पीडीएफ अपलोड करें।" 
-                    : "No documents have been uploaded or indexed yet. Please go to the admin panel and upload PDFs."),
-                sourcePdf: "-",
-                pageNumber: "-",
-                confidence: "-",
-                clause: "-"
+        if (directChunks.length > 0) {
+            // We have direct exact matches! Bypass generating query embedding.
+            let allChunks = directChunks.map(chunkData => ({
+                ...chunkData,
+                rawSimilarity: 1.0,
+                boostedSimilarity: 1.0,
+                isExactClauseMatch: true
+            }));
+            allChunks.sort((a, b) => a.pageNumber - b.pageNumber);
+            topChunks = allChunks.slice(0, 8);
+            console.log(`Bypassed embedding creation. Using ${topChunks.length} direct clause chunks.`);
+        } else {
+            // Fallback: Generate query embedding and perform vector search
+            console.log("No direct clause matches. Generating query embedding for vector search...");
+            const queryEmbeddingResponse = await openai.embeddings.create({
+                model: "text-embedding-3-small",
+                input: question
             });
-        }
-        
-        // Merge vector and direct search results, removing duplicates
-        const mergedChunksMap = new Map();
-        directChunks.forEach(c => {
-            mergedChunksMap.set(c.id, c);
-        });
-        chunksSnap.forEach(doc => {
-            if (!mergedChunksMap.has(doc.id)) {
-                mergedChunksMap.set(doc.id, { id: doc.id, ...doc.data() });
-            }
-        });
+            const queryEmbedding = queryEmbeddingResponse.data[0].embedding;
 
-        // 3. Build all chunks with cosine similarity and keyword boosting
-        let allChunks = [];
-        mergedChunksMap.forEach((chunkData) => {
-            const vec = chunkData.embedding ? chunkData.embedding.toArray() : [];
-            const similarity = vec.length > 0 ? cosineSimilarity(queryEmbedding, vec) : 0;
-            
-            // Check if chunk text contains any of the clause numbers from the query in a clause prefix format
-            let isExactClauseMatch = false;
-            for (const clauseNum of clauseMatches) {
-                if (chunkData.clauses && chunkData.clauses.includes(clauseNum)) {
-                    isExactClauseMatch = true;
-                    break;
+            let keywordChunks = [];
+            const keywordTargets = [...queryKeywords].slice(0, 10);
+            if (keywordTargets.length > 0) {
+                try {
+                    const directQuery2 = db.collection("chunks").where("tags", "array-contains-any", keywordTargets);
+                    const snap2 = await directQuery2.get();
+                    snap2.forEach(doc => {
+                        keywordChunks.push({ id: doc.id, ...doc.data() });
+                    });
+                } catch (err) {
+                    console.error("Keyword metadata query error:", err);
                 }
-                if (chunkData.text) {
-                    const cleanText = chunkData.text;
-                    const siRegex = new RegExp(`\\[SI:\\s*${clauseNum.replace('.', '\\.')}[\\s\\].(]`, 'i');
-                    const wordRegex = new RegExp(`\\b${clauseNum.replace('.', '\\.')}\\.\\b`, 'i');
-                    if (siRegex.test(cleanText) || wordRegex.test(cleanText)) {
+            }
+
+            const query = db.collection("chunks").findNearest({
+                vectorField: 'embedding',
+                queryVector: queryEmbedding,
+                limit: 150,
+                distanceMeasure: 'COSINE'
+            });
+
+            const chunksSnap = await query.get();
+            if (chunksSnap.empty && keywordChunks.length === 0) {
+                return res.json({
+                    answer: formatAnswer(isHindiQuery 
+                        ? "अभी तक कोई दस्तावेज़ अपलोड या अनुक्रमित नहीं किया गया है। कृपया एडमिन पैनल पर जाएं और पीडीएफ अपलोड करें।" 
+                        : "No documents have been uploaded or indexed yet. Please go to the admin panel and upload PDFs."),
+                    sourcePdf: "-",
+                    pageNumber: "-",
+                    confidence: "-",
+                    clause: "-"
+                });
+            }
+            
+            // Merge vector and direct search results, removing duplicates
+            const mergedChunksMap = new Map();
+            keywordChunks.forEach(c => {
+                mergedChunksMap.set(c.id, c);
+            });
+            chunksSnap.forEach(doc => {
+                if (!mergedChunksMap.has(doc.id)) {
+                    mergedChunksMap.set(doc.id, { id: doc.id, ...doc.data() });
+                }
+            });
+
+            // 3. Build all chunks with cosine similarity and keyword boosting
+            let allChunks = [];
+            mergedChunksMap.forEach((chunkData) => {
+                const vec = chunkData.embedding ? chunkData.embedding.toArray() : [];
+                const similarity = vec.length > 0 ? cosineSimilarity(queryEmbedding, vec) : 0;
+                let isExactClauseMatch = false;
+
+                for (const clauseNum of clauseMatches) {
+                    if (chunkData.clauses && chunkData.clauses.includes(clauseNum)) {
                         isExactClauseMatch = true;
                         break;
                     }
+                    if (chunkData.text) {
+                        const cleanText = chunkData.text;
+                        const siRegex = new RegExp(`\\[SI:\\s*${clauseNum.replace('.', '\\.')}[\\s\\].(]`, 'i');
+                        const wordRegex = new RegExp(`\\b${clauseNum.replace('.', '\\.')}\\.\\b`, 'i');
+                        if (siRegex.test(cleanText) || wordRegex.test(cleanText)) {
+                            isExactClauseMatch = true;
+                            break;
+                        }
+                    }
                 }
-            }
-            
-            // Apply keyword boosting to score
-            const boostedSimilarity = isExactClauseMatch ? similarity + 0.35 : similarity;
-            allChunks.push({
-                ...chunkData,
-                rawSimilarity: similarity,
-                boostedSimilarity: boostedSimilarity,
-                isExactClauseMatch: isExactClauseMatch
+                
+                // Apply keyword boosting to score
+                const boostedSimilarity = isExactClauseMatch ? similarity + 0.35 : similarity;
+                allChunks.push({
+                    ...chunkData,
+                    rawSimilarity: similarity,
+                    boostedSimilarity: boostedSimilarity,
+                    isExactClauseMatch: isExactClauseMatch
+                });
             });
-        });
 
-        // Sort chunks by boosted similarity score descending
-        allChunks.sort((a, b) => b.boostedSimilarity - a.boostedSimilarity);
-        
-        // Take the top 15 chunks for prompt context (provides broader coverage of tables/remarks)
-        let topChunks = allChunks.slice(0, 15);
+            // Sort chunks by boosted similarity score descending
+            allChunks.sort((a, b) => b.boostedSimilarity - a.boostedSimilarity);
+            topChunks = allChunks.slice(0, 8);
 
-        // Compute confidence using boosted similarity (includes +0.25 clause-match bonus)
-        // If the top chunk is an exact clause match (e.g. user asked about Clause 4.3 and top
-        // chunk explicitly contains "4.3"), we treat confidence as 100%.
-        const topDoc = topChunks[0];
-        const highestSimilarity = topDoc.boostedSimilarity || topDoc.rawSimilarity || 0.99;
-        let confidencePercentage;
-        if (topDoc.isExactClauseMatch) {
-            confidencePercentage = 100; // confirmed clause-specific answer
-        } else {
-            confidencePercentage = scaleConfidence(highestSimilarity);
-        }
-        
-        console.log(`Top chunk: raw=${topDoc.rawSimilarity?.toFixed(4)}, boosted=${topDoc.boostedSimilarity?.toFixed(4)}, exactClauseMatch=${topDoc.isExactClauseMatch} -> confidence: ${confidencePercentage}%`);
-        
-        if (highestSimilarity < 0.20) {
-            try {
-                const completion = await openai.chat.completions.create({
-                    model: 'gpt-4o',
-                    messages: [
-                        {
-                            role: 'system',
-                            content: `You are a helpful, conversational AI Assistant for company policy documents.
+            const topDoc = topChunks[0];
+            highestSimilarity = topDoc.boostedSimilarity || topDoc.rawSimilarity || 0.99;
+            confidencePercentage = topDoc.isExactClauseMatch ? 100 : scaleConfidence(highestSimilarity);
+            console.log(`Top chunk: raw=${topDoc.rawSimilarity?.toFixed(4)}, boosted=${topDoc.boostedSimilarity?.toFixed(4)}, exactClauseMatch=${topDoc.isExactClauseMatch} -> confidence: ${confidencePercentage}%`);
+            
+            if (highestSimilarity < 0.20) {
+                try {
+                    const completion = await openai.chat.completions.create({
+                        model: 'gpt-4o-mini',
+                        messages: [
+                            {
+                                role: 'system',
+                                content: `You are a helpful, conversational AI Assistant for company policy documents.
 The user is either asking a general conversational query (e.g. "are you correct?", "who are you?", "thank you"), or asking something that could not be matched with high confidence to the uploaded manuals.
 Your instructions:
 1. If the user is asking a general question about yourself, your capabilities, your accuracy, or giving general feedback/greetings, reply naturally, politely, and conversationally (like ChatGPT). Explain how you work (grounded in the policy manuals using vector search and deterministic limit checks) but answer their immediate query directly.
@@ -810,6 +820,7 @@ Format your response strictly as JSON: {"answer": "...", "clause": "-"}`
                 });
             }
         }
+    }
         
         // ── 5. Deterministic authority resolution for DOP threshold queries ────
         // Extract clause + amount from question. If found, resolve authority IN CODE.
@@ -851,7 +862,7 @@ Format your response strictly as JSON: {"answer": "...", "clause": "-"}`
                 .map(k => `${AUTHORITY_NAMES[k]} (limit: ${clauseRow[k]})`)
                 .join(', ');
 
-            systemPrompt = `You are a helpful, conversational document assistant. Write a warm, friendly, and clear answer in natural user-friendly language using ONLY the facts provided. Do NOT alter any name, limit, or amount. Respond with JSON: {"answer": "...", "clause": "Clause ${clauseNum}"}`;
+            systemPrompt = `You are a helpful, conversational document assistant. Write a warm, friendly, clear, and concise answer in natural user-friendly language using ONLY the facts provided. Keep your response direct and under 150 words. Do NOT alter any name, limit, or amount. Respond with JSON: {"answer": "...", "clause": "Clause ${clauseNum}"}`;
             userPrompt = `VERIFIED FACTS:
 - Clause: ${clauseNum} — ${clauseRow.Nature || 'Delegation of Powers'}
 - Query amount: ${targetDisplay}
@@ -864,7 +875,7 @@ CONTEXT FROM DOCUMENT (contains Remarks/Notes/Exceptions):
 ${contextText}
 
 Instructions:
-1. Explain this in natural, friendly style. Use **bolding** for key terms. Write in multiple short paragraphs (double newlines).
+1. Explain this in natural, friendly style. Keep it concise (under 150 words). Use **bolding** for key terms. Write in multiple short paragraphs (double newlines).
 2. You MUST include and explain any critical exceptions, conditions, or instructions from the "Remarks" or "Notes" section of Clause ${clauseNum} in your explanation.
 ${isHindiQuery ? "Write the entire response in Hindi (Devanagari script), keeping exact names/limits/clause numbers bolded." : ""}
 3. End with a friendly follow-up question.
@@ -874,12 +885,12 @@ Answer JSON:`;
         } else {
             systemPrompt = `You are an expert AI assistant for company policy documents.
 CRITICAL INSTRUCTIONS FOR 100% ACCURACY, READABILITY, AND NO HALLUCINATIONS:
-1. Grounding: Answer the question using ONLY the facts explicitly stated in the provided context blocks. Do not assume, extrapolate, or bring in outside information.
+1. Grounding: Answer the question using ONLY the facts explicitly stated in the provided context blocks. Keep your response concise, clear, and under 150 words.
 2. No Hallucinations: If the context doesn't contain the answer, say "I couldn't find the answer in the provided documents."
 3. Exact Match: Do not alter any clause numbers, numbers, amounts, percentages, names, or quotes. They must be copied exactly from the context.
 4. Abbreviations: ED = Executive Director, GM = General Manager, AGM = Additional General Manager, DGM = Deputy General Manager, SM = Senior Manager.
 5. Format: Respond with JSON format strictly: {"answer": "...", "clause": "..."}. Fill "clause" with the specific clause number found (e.g. "Clause 3.1" or "Clause 4.3") or "General" if not specified.
-6. Paragraphs and Formatting: Structure your response in multiple short, distinct paragraphs (separated by double newlines '\\n\\n') to improve readability. Use markdown **bolding** for key terms.
+6. Paragraphs and Formatting: Structure your response in multiple short, distinct paragraphs (separated by double newlines '\\n\\n') to improve readability. Keep it under 150 words. Use markdown **bolding** for key terms.
 7. General/Parent/Sub-Clauses: If the user asks about a general clause (e.g. Clause 15, Clause 4, Clause 10) and there are multiple sub-clauses (e.g. 15(a), 15(b) or 4.1, 4.2 or 10 A, 10 B) in the context, you MUST present a high-level summary of all sub-clauses and politely ask if they would like details on a specific sub-clause.
 8. Interactive Buttons: If recommending or prompting for specific sub-clauses, you should output interactive HTML buttons inside your "answer" field for them, formatted exactly like: <button class="chat-opt-btn" onclick="selectSuggestion('tell me about clause 15(a)')">📖 Details for Clause 15(a)</button>.
 9. Remarks and Notes: You MUST always take into account and include any "Remarks" or "Notes" associated with the clauses you are explaining, as they contain critical exceptions, limits, or conditions.
@@ -891,7 +902,7 @@ ${isHindiQuery ? "Write your entire response in Hindi (Devanagari script)." : ""
 
         // ── 7. Call OpenAI GPT-4o ─────────────────────────────────────────────
         const completion = await openai.chat.completions.create({
-            model: 'gpt-4o',
+            model: 'gpt-4o-mini',
             messages: [
                 { role: 'system', content: systemPrompt },
                 { role: 'user',   content: userPrompt }
