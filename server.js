@@ -862,11 +862,10 @@ Format your response strictly as JSON: {"answer": "...", "clause": "-"}`
                 .map(k => `${AUTHORITY_NAMES[k]} (limit: ${clauseRow[k]})`)
                 .join(', ');
 
-            systemPrompt = `You are a helpful, conversational document assistant. Write a warm, friendly, clear, and concise answer in natural user-friendly language using ONLY the facts provided. Keep your response direct and under 150 words. Do NOT alter any name, limit, or amount. Respond with JSON: {"answer": "...", "clause": "Clause ${clauseNum}"}`;
+            systemPrompt = `You are a helpful, conversational document assistant. Write an extremely direct, pinpointed, and clear answer using ONLY the facts provided. Keep the response under 60 words and focused strictly on answering the specific question. Do NOT explain or show delegation limits/powers of other authorities not requested. Do NOT list the limits of other authorities. Respond with JSON: {"answer": "...", "clause": "Clause ${clauseNum}"}`;
             userPrompt = `VERIFIED FACTS:
 - Clause: ${clauseNum} — ${clauseRow.Nature || 'Delegation of Powers'}
 - Query amount: ${targetDisplay}
-- Delegation limits for Clause ${clauseNum}: ${limitTable}
 - COMPETENT AUTHORITY: ${authority.name}
 - Their limit: ${authority.limitText}
 ${lowerReasons ? `- Cannot approve: ${lowerReasons}` : ''}
@@ -875,11 +874,10 @@ CONTEXT FROM DOCUMENT (contains Remarks/Notes/Exceptions):
 ${contextText}
 
 Instructions:
-1. Explain this in natural, friendly style. Keep it concise (under 150 words). Use **bolding** for key terms. Write in multiple short paragraphs (double newlines).
-2. You MUST include and explain any critical exceptions, conditions, or instructions from the "Remarks" or "Notes" section of Clause ${clauseNum} in your explanation.
+1. Answer the question directly and pinpointedly in 1-2 short sentences. State only the competent authority and their limit for the queried amount. Do NOT list or mention the limits/powers of other authorities, and do NOT output a table of delegation limits.
+2. If there is a critical exception/remark directly affecting this specific approval, mention it in one very brief sentence. Otherwise, do not include generic remarks.
 ${isHindiQuery ? "Write the entire response in Hindi (Devanagari script), keeping exact names/limits/clause numbers bolded." : ""}
-3. End with a friendly follow-up question.
-4. Do not alter any numbers or authority names.
+3. Do not alter any numbers or authority names.
 Answer JSON:`;
 
         } else {
