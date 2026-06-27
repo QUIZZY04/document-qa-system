@@ -90,6 +90,51 @@ function scaleConfidence(similarity) {
     return 100; // anything >= 0.70 boosted similarity = 100%
 }
 
+function expandClauseTargets(clauseNum) {
+    const targets = new Set();
+    targets.add(clauseNum);
+
+    // Case 1: Decimal clause like "4.2" or "10.3"
+    const decimalMatch = clauseNum.match(/^(\d+)\.(\d+)$/);
+    if (decimalMatch) {
+        const parent = decimalMatch[1];
+        targets.add(parent);
+        // Add siblings 1 to 8
+        for (let i = 1; i <= 8; i++) {
+            targets.add(`${parent}.${i}`);
+        }
+    }
+
+    // Case 2: Clause with parenthetical sub-clause like "15(a)" or "15(b)"
+    const parenMatch = clauseNum.match(/^(\d+)\(([a-z])\)$/i);
+    if (parenMatch) {
+        const parent = parenMatch[1];
+        targets.add(parent);
+        // Add siblings a to f
+        const letters = ['a', 'b', 'c', 'd', 'e', 'f'];
+        letters.forEach(let => {
+            targets.add(`${parent}(${let})`);
+        });
+    }
+
+    // Case 3: Parent clause itself, like "4" or "15"
+    const parentMatch = clauseNum.match(/^(\d+)$/);
+    if (parentMatch) {
+        const parent = parentMatch[1];
+        // Add decimal sub-clauses 1 to 8
+        for (let i = 1; i <= 8; i++) {
+            targets.add(`${parent}.${i}`);
+        }
+        // Add parenthetical sub-clauses a to f
+        const letters = ['a', 'b', 'c', 'd', 'e', 'f'];
+        letters.forEach(let => {
+            targets.add(`${parent}(${let})`);
+        });
+    }
+
+    return Array.from(targets);
+}
+
 
 // =============================================================================
 // DETERMINISTIC AUTHORITY RESOLVER
@@ -648,9 +693,17 @@ Feel free to click any of these options or ask your own question!`;
         const queryKeywords = extractKeywords(question);
         console.log(`Extracted query keywords:`, queryKeywords);
 
-        // 1. Try to fetch direct exact clause matches first to bypass embedding latency
-        let directChunks = [];
-        const clauseTargets = [...clauseMatches].slice(0, 5);
+        // Expand targets to include parent and siblings (so remarks under the last subclause are fetched)
+        let clauseTargets = [];
+        clauseMatches.forEach(cl => {
+            expandClauseTargets(cl).forEach(t => {
+                if (!clauseTargets.includes(t)) {
+                    clauseTargets.push(t);
+                }
+            });
+        });
+        clauseTargets = clauseTargets.slice(0, 30); // Firestore array-contains-any limit
+
         if (clauseTargets.length > 0) {
             try {
                 const directQuery1 = db.collection("chunks").where("clauses", "array-contains-any", clauseTargets);
@@ -862,7 +915,7 @@ Format your response strictly as JSON: {"answer": "...", "clause": "-"}`
                 .map(k => `${AUTHORITY_NAMES[k]} (limit: ${clauseRow[k]})`)
                 .join(', ');
 
-            systemPrompt = `You are a helpful, conversational document assistant. Write an extremely direct, pinpointed, and clear answer using ONLY the facts provided. Keep the response under 60 words and focused strictly on answering the specific question. Do NOT explain or show delegation limits/powers of other authorities not requested. Do NOT list the limits of other authorities. Respond with JSON: {"answer": "...", "clause": "Clause ${clauseNum}"}`;
+            systemPrompt = `You are a helpful, conversational document assistant. Write an extremely direct, pinpointed, and clear answer using ONLY the facts provided. Keep the response under 60 words and focused strictly on answering the specific question. Do NOT explain or show delegation limits/powers of other authorities not requested. Do NOT list the limits of other authorities. Note: Remarks listed at the end of a main clause (e.g. below 4.3 or below 15) apply to all of its sub-clauses (e.g. 4.1, 4.2, 4.3). Respond with JSON: {"answer": "...", "clause": "Clause ${clauseNum}"}`;
             userPrompt = `VERIFIED FACTS:
 - Clause: ${clauseNum} — ${clauseRow.Nature || 'Delegation of Powers'}
 - Query amount: ${targetDisplay}
@@ -875,7 +928,7 @@ ${contextText}
 
 Instructions:
 1. Answer the question directly and pinpointedly in 1-2 short sentences. State only the competent authority and their limit for the queried amount. Do NOT list or mention the limits/powers of other authorities, and do NOT output a table of delegation limits.
-2. If there is a critical exception/remark directly affecting this specific approval, mention it in one very brief sentence. Otherwise, do not include generic remarks.
+2. If there is a critical exception/remark directly affecting this specific approval (e.g. remarks listed under 4.3 apply to 4.1, 4.2, 4.3 as well), mention it in one very brief sentence. Otherwise, do not include generic remarks.
 ${isHindiQuery ? "Write the entire response in Hindi (Devanagari script), keeping exact names/limits/clause numbers bolded." : ""}
 3. Do not alter any numbers or authority names.
 Answer JSON:`;
@@ -891,7 +944,7 @@ CRITICAL INSTRUCTIONS FOR 100% ACCURACY, READABILITY, AND NO HALLUCINATIONS:
 6. Paragraphs and Formatting: Structure your response in multiple short, distinct paragraphs (separated by double newlines '\\n\\n') to improve readability. Keep it under 150 words. Use markdown **bolding** for key terms.
 7. General/Parent/Sub-Clauses: If the user asks about a general clause (e.g. Clause 15, Clause 4, Clause 10) and there are multiple sub-clauses (e.g. 15(a), 15(b) or 4.1, 4.2 or 10 A, 10 B) in the context, you MUST present a high-level summary of all sub-clauses and politely ask if they would like details on a specific sub-clause.
 8. Interactive Buttons: If recommending or prompting for specific sub-clauses, you should output interactive HTML buttons inside your "answer" field for them, formatted exactly like: <button class="chat-opt-btn" onclick="selectSuggestion('tell me about clause 15(a)')">📖 Details for Clause 15(a)</button>.
-9. Remarks and Notes: You MUST always take into account and include any "Remarks" or "Notes" associated with the clauses you are explaining, as they contain critical exceptions, limits, or conditions.
+9. Remarks and Notes: You MUST always take into account and include any "Remarks" or "Notes" associated with the clauses you are explaining, as they contain critical exceptions, limits, or conditions. Note that Remarks/Notes listed at the end of a clause (e.g. below 4.3 or below 15) apply to all of its sub-clauses (e.g. 4.1, 4.2, 4.3 or 15(a), 15(b)). Apply them accordingly.
 10. End with a friendly follow-up question.
 ${isHindiQuery ? "Write your entire response in Hindi (Devanagari script)." : ""}`;
 
