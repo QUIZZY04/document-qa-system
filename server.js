@@ -693,6 +693,7 @@ Feel free to click any of these options or ask your own question!`;
         const queryKeywords = extractKeywords(question);
         console.log(`Extracted query keywords:`, queryKeywords);
 
+        let directChunks = [];
         // Expand targets to include parent and siblings (so remarks under the last subclause are fetched)
         let clauseTargets = [];
         clauseMatches.forEach(cl => {
@@ -890,6 +891,30 @@ Format your response strictly as JSON: {"answer": "...", "clause": "-"}`
                     .join(' | ');
                 preComputedFact = { clauseNum, targetLakh, authority, clauseRow, limitTable };
                 console.log(`[RESOLVE] Clause ${clauseNum}, target=${targetLakh}L → ${authority.name} (${authority.limitText})`);
+
+                // Zero-Latency Local Formatting Bypass
+                const targetDisplay = targetLakh >= 100 ? `Rs. ${(targetLakh / 100).toFixed(targetLakh % 100 === 0 ? 0 : 2)} crore` : `Rs. ${targetLakh} lakh`;
+                let answerText = "";
+                let buttonsHtml = "";
+                const otherClause = clauseNum.startsWith("4") ? (clauseNum === "4.3" ? "4.1" : "4.3") : "4.3";
+
+                if (isHindiQuery) {
+                    answerText = `**क्लॉज ${clauseNum}** के तहत, **${targetDisplay}** की राशि के लिए सक्षम प्राधिकारी **${authority.name}** हैं (उनकी मंजूरी सीमा: **${authority.limitText}**)।`;
+                    buttonsHtml = `\n\n<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause ${clauseNum} for Rs 21 lakh')">💼 क्या क्लॉज ${clauseNum} के तहत 21 लाख रुपये के लिए मंजूरी मिल सकती है?</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('what does clause ${otherClause} cover?')">📖 क्लॉज ${otherClause} में क्या शामिल है?</button>`;
+                } else {
+                    answerText = `Under **Clause ${clauseNum}**, the competent approving authority for **${targetDisplay}** is the **${authority.name}** (approval limit: **${authority.limitText}**).`;
+                    buttonsHtml = `\n\n<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause ${clauseNum} for Rs 21 lakh')">💼 Check Rs 21 lakh under Clause ${clauseNum}</button>
+<button class="chat-opt-btn" onclick="selectSuggestion('what does clause ${otherClause} cover?')">📖 What does Clause ${otherClause} cover?</button>`;
+                }
+
+                return res.json({
+                    answer: formatAnswer(answerText + buttonsHtml),
+                    sourcePdf: topChunks.length > 0 ? topChunks[0].docName : "-",
+                    pageNumber: topChunks.length > 0 ? topChunks[0].pageNumber.toString() : "-",
+                    confidence: "100%",
+                    clause: `Clause ${clauseNum}`
+                });
             }
         }
 
