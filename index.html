@@ -171,6 +171,7 @@ html, body {
 }
 
 .backend-badge {
+    display: none; /* Hidden by default */
     font-size: 11px;
     font-weight: 500;
     color: var(--primary);
@@ -759,8 +760,15 @@ import { doc, getDoc } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-
 const urlParams = new URLSearchParams(window.location.search);
 if (urlParams.has('backendUrl')) {
     localStorage.setItem('backendUrl', urlParams.get('backendUrl'));
+    localStorage.setItem('backendUrlSetByUser', 'true');
     const cleanUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
     window.history.replaceState({}, document.title, cleanUrl);
+}
+
+// Show backend settings badge only in debug mode
+const backendSettingsLink = document.getElementById("backend-settings-link");
+if (urlParams.has('debug') && backendSettingsLink) {
+    backendSettingsLink.style.display = "inline-block";
 }
 
 let currentBackend = localStorage.getItem('backendUrl');
@@ -774,25 +782,38 @@ const staleUrls = [
     'http://127.0.0.1:5500', 'http://localhost:5500', 'http://127.0.0.1:5501',
     'https://quizzy04backend.loca.lt', 'https://api-szv5aavwca-el.a.run.app'
 ];
-if (!currentBackend || staleUrls.includes(currentBackend) ||
-    currentBackend.includes('.lhr.life') || currentBackend.includes('.loca.lt')) {
+const isBackendSetByUser = localStorage.getItem('backendUrlSetByUser') === 'true';
+
+if (!isBackendSetByUser && (!currentBackend || staleUrls.includes(currentBackend) ||
+    currentBackend.includes('.lhr.life') || currentBackend.includes('.loca.lt'))) {
     localStorage.setItem('backendUrl', FIREBASE_BACKEND);
     currentBackend = FIREBASE_BACKEND;
 }
-const backendSettingsLink = document.getElementById("backend-settings-link");
-if (backendSettingsLink) {
-    backendSettingsLink.textContent = currentBackend;
-    backendSettingsLink.addEventListener("click", (e) => {
-        e.preventDefault();
-        const newUrl = prompt("Enter Backend Server URL (e.g. http://192.168.1.15:5000 or your public Render URL):", currentBackend);
-        if (newUrl) {
-            let formattedUrl = newUrl.trim();
+
+window.changeBackendUrl = function() {
+    const currentVal = localStorage.getItem('backendUrl') || FIREBASE_BACKEND;
+    const newUrl = prompt("Enter Backend Server URL (e.g. http://192.168.1.15:5000 or your public Render URL):", currentVal);
+    if (newUrl !== null) {
+        let formattedUrl = newUrl.trim();
+        if (formattedUrl === "") {
+            localStorage.removeItem('backendUrl');
+            localStorage.removeItem('backendUrlSetByUser');
+        } else {
             if (formattedUrl.endsWith('/')) {
                 formattedUrl = formattedUrl.slice(0, -1);
             }
             localStorage.setItem('backendUrl', formattedUrl);
-            window.location.reload();
+            localStorage.setItem('backendUrlSetByUser', 'true');
         }
+        window.location.reload();
+    }
+};
+
+if (backendSettingsLink) {
+    backendSettingsLink.textContent = currentBackend;
+    backendSettingsLink.addEventListener("click", (e) => {
+        e.preventDefault();
+        window.changeBackendUrl();
     });
 }
 
@@ -919,14 +940,15 @@ window.askQuestion = async function() {
 
     } catch (err) {
         console.error("QA query failed:", err);
-        const currentBackend = localStorage.getItem('backendUrl') || 'http://192.168.1.5:5000';
+        const currentBackendVal = localStorage.getItem('backendUrl') || FIREBASE_BACKEND;
         const innerChatMsg = assistantMsg.querySelector(".chat-message");
         innerChatMsg.innerHTML = `
             <div class="msg-content" style="color: #dc2626; font-weight: 500;">
                 Failed to retrieve answer: ${err.message}.<br><br>
                 <strong style="color: var(--text-main);">Troubleshooting:</strong><br>
                 1. Make sure your backend server is running.<br>
-                2. If you are accessing this from a mobile phone or another system, click the <strong>Backend Server</strong> badge at the top to configure your PC's IP address (current: <code>${currentBackend}</code>).
+                2. If you are accessing this from a mobile phone or another system, <a href="#" onclick="event.preventDefault(); window.changeBackendUrl();" style="color: var(--primary); text-decoration: underline; font-weight: 600;">click here to configure the backend URL</a> (current: <code>${currentBackendVal}</code>).<br><br>
+                3. <strong>Mixed Content Restriction:</strong> If this website is loaded over HTTPS (secure), the browser will block requests to a local HTTP backend (like <code>http://192.168...</code>). To fix this, load the frontend using the HTTP protocol (e.g. <code>http://&lt;your-pc-ip&gt;:5500</code>).
             </div>
         `;
     } finally {
