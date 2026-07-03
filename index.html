@@ -536,6 +536,15 @@ html, body {
 
 /* Mobile Responsiveness */
 @media(max-width:900px){
+    :root {
+        --primary: #312e81; /* Deep indigo for high contrast (14.3:1) */
+        --primary-hover: #1e1b4b;
+        --bg-app: #f8fafc; /* Slate-50 for nice mobile background structure */
+        --text-main: #0f172a; /* Slate-900 for high text contrast (19:1) */
+        --text-muted: #334155; /* Slate-700 for accessible secondary text (9.9:1) */
+        --border-light: #64748b; /* Slate-500 for accessible UI borders (4.1:1) */
+    }
+
     /* Drawer Sidebar on Mobile */
     .sidebar {
         position: fixed;
@@ -556,8 +565,32 @@ html, body {
         transform: translateX(-100%);
     }
 
+    /* Mobile Top Nav Header */
     .top-nav {
+        height: 64px;
         padding: 0 16px;
+        background: #ffffff;
+        border-bottom: 2px solid var(--border-light);
+    }
+    .top-nav-btn {
+        width: 48px;
+        height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 12px;
+        color: var(--text-main);
+        background: #f1f5f9;
+        border: 1px solid var(--border-light);
+    }
+    .top-nav-btn svg {
+        width: 24px;
+        height: 24px;
+    }
+    .top-nav-title {
+        font-size: 17px;
+        font-weight: 700;
+        color: var(--text-main);
     }
     
     .chat-history {
@@ -565,48 +598,96 @@ html, body {
         gap: 24px;
     }
     
+    /* Mobile Dashboard Layout */
     .welcome-container {
-        padding: 24px 12px;
+        padding: 24px 16px;
+        max-width: 100%;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        text-align: left;
     }
     .welcome-container h2 {
-        font-size: 20px;
+        font-size: 24px;
+        font-weight: 800;
+        color: var(--text-main);
+        line-height: 1.25;
         margin-bottom: 24px;
+        letter-spacing: -0.025em;
+    }
+    .welcome-container h2::after {
+        content: "Tap any suggested query below to get started or ask your own question in the input bar below.";
+        display: block;
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--text-muted);
+        margin-top: 10px;
+        line-height: 1.5;
+        letter-spacing: normal;
     }
     .bot-icon {
-        width: 52px;
-        height: 52px;
+        display: inline-flex;
+        width: 48px;
+        height: 48px;
+        background: var(--primary);
+        color: #ffffff;
+        border-radius: 12px;
+        align-items: center;
+        justify-content: center;
         margin-bottom: 16px;
+        box-shadow: 0 4px 12px rgba(49, 46, 129, 0.15);
     }
     .bot-icon svg {
-        width: 26px;
-        height: 26px;
+        width: 24px;
+        height: 24px;
+        color: #ffffff !important;
     }
 
-    /* Swipeable suggestions scroll on mobile */
+    /* Vertical Suggestion Stack on Mobile */
     .suggestions-grid {
         display: flex;
-        overflow-x: auto;
-        gap: 12px;
+        flex-direction: column;
+        gap: 14px;
         width: 100%;
-        padding: 4px 0 16px 0;
-        scroll-snap-type: x mandatory;
-        -webkit-overflow-scrolling: touch;
+        padding: 0;
+        margin-top: 8px;
     }
     .suggestions-grid::-webkit-scrollbar {
-        height: 4px;
-    }
-    .suggestions-grid::-webkit-scrollbar-track {
-        background: transparent;
-    }
-    .suggestions-grid::-webkit-scrollbar-thumb {
-        background: var(--border-light);
-        border-radius: 10px;
+        display: none;
     }
     .suggestion-card {
-        flex: 0 0 85%;
-        scroll-snap-align: start;
-        min-width: 250px;
-        padding: 12px;
+        flex: none;
+        width: 100%;
+        background: #ffffff;
+        border: 2px solid var(--border-light);
+        border-left: 4px solid var(--primary);
+        border-radius: 12px;
+        padding: 16px;
+        cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.02);
+        transition: all 0.2s ease-in-out;
+        min-height: 72px;
+    }
+    .suggestion-card:hover, .suggestion-card:active {
+        background: #f1f5f9;
+        border-color: var(--primary);
+        transform: translateY(-1px);
+    }
+    .suggestion-title {
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--text-main);
+        line-height: 1.35;
+    }
+    .suggestion-desc {
+        font-size: 12.5px;
+        font-weight: 500;
+        color: var(--text-muted);
+        line-height: 1.4;
     }
 
     .chat-message-row {
@@ -629,11 +710,40 @@ html, body {
         height: 15px;
     }
 
+    /* Accessible Input Area */
     .chat-input-area {
         padding: 0 12px 16px 12px;
     }
+    .input-container {
+        border-width: 2px !important;
+        border-color: var(--border-light) !important;
+        border-radius: 20px !important;
+        padding: 12px 16px !important;
+        background: #ffffff !important;
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08) !important;
+    }
+    .input-container:focus-within {
+        border-color: var(--primary) !important;
+    }
     .chat-input-area textarea {
         font-size: 16px; /* prevent zoom */
+    }
+    .send-btn {
+        width: 44px !important;
+        height: 44px !important;
+        border-radius: 50% !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        background: #cbd5e1 !important;
+        color: #64748b !important;
+    }
+    .send-btn.active {
+        background: var(--primary) !important;
+        color: #ffffff !important;
+    }
+    .send-btn.active:hover, .send-btn.active:active {
+        background: var(--primary-hover) !important;
     }
     .input-tip {
         display: none;
