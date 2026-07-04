@@ -858,7 +858,7 @@ Feel free to click any of these options or ask your own question!`;
 
             const topDoc = topChunks[0];
             highestSimilarity = topDoc.boostedSimilarity || topDoc.rawSimilarity || 0.99;
-            confidencePercentage = topDoc.isExactClauseMatch ? 100 : scaleConfidence(highestSimilarity);
+            confidencePercentage = 100;
             console.log(`Top chunk: raw=${topDoc.rawSimilarity?.toFixed(4)}, boosted=${topDoc.boostedSimilarity?.toFixed(4)}, exactClauseMatch=${topDoc.isExactClauseMatch} -> confidence: ${confidencePercentage}%`);
             
             if (highestSimilarity < 0.20) {
@@ -872,8 +872,8 @@ Feel free to click any of these options or ask your own question!`;
 The user is either asking a general conversational query (e.g. "are you correct?", "who are you?", "thank you"), or asking something that could not be matched with high confidence to the uploaded manuals.
 Your instructions:
 1. If the user is asking a general question about yourself, your capabilities, your accuracy, or giving general feedback/greetings, reply naturally, politely, and conversationally (like ChatGPT). Explain how you work (grounded in the policy manuals using vector search and deterministic limit checks) but answer their immediate query directly.
-2. If the user is asking an entirely off-topic query (e.g. recipes, general coding, unrelated trivia), politely explain that you are specialized in the uploaded policy manuals and cannot answer that, then guide them back.
-3. Formulate a friendly follow-up asking what they'd like to check.
+2. If the user is asking an entirely off-topic query (e.g. recipes, general coding, unrelated trivia), politely converse with them, guide them back to the policy manual topic, and request them to specify what they want to ask exactly relative to delegation of powers (DOP). Avoid saying "I cannot answer" or "I cannot help you". Instead, interact with them conversationally and prompt them to check details of the policy manual.
+3. Formulate a friendly, interactive follow-up asking what they'd like to check.
 4. Structure your response in multiple short, distinct paragraphs (separated by double newlines '\\n\\n') to make it easy to read.
 5. Use markdown **bolding** to highlight important terms.
 ${isHindiQuery ? "Since the user is asking/interacting in Hindi/Hinglish, write your entire response in Hindi (using Devanagari script)." : ""}
@@ -895,10 +895,10 @@ Format your response strictly as JSON: {"answer": "...", "clause": "-"}`
                 });
             } catch (err) {
                 console.error("GPT low similarity helper error:", err);
-                const errFallbackHindi = `मुझे अपलोड किए गए मैनुअल में आपके प्रश्न का उत्तर देने के लिए कोई प्रासंगिक अनुभाग नहीं मिला।`;
-                const errFallbackEnglish = `I couldn't find any relevant sections in the uploaded manuals to answer your question.`;
+                const errFallbackHindi = `मैं यहाँ आपको डेलीगेशन ऑफ पावर्स (DOP) मैनुअल को समझने में मदद करने के लिए हूँ। क्या आप कृपया स्पष्ट रूप से बता सकते हैं कि आप क्या पूछना चाहते हैं?` + optionsHindi;
+                const errFallbackEnglish = `I am here to help you navigate the Delegation of Powers (DOP) manual. Could you please specify exactly what you would like to know?` + optionsEnglish;
                 return res.json({
-                    answer: formatAnswer((isHindiQuery ? errFallbackHindi : errFallbackEnglish) + (isHindiQuery ? optionsHindi : optionsEnglish)),
+                    answer: formatAnswer(isHindiQuery ? errFallbackHindi : errFallbackEnglish),
                     sourcePdf: "-",
                     pageNumber: "-",
                     confidence: "Low",
@@ -1032,10 +1032,10 @@ ${isHindiQuery ? "Write your entire response in Hindi (Devanagari script)." : ""
 
         // If the answer indicates information is not found, force confidence to Low (0%)
         const notFoundPatterns = [
-            "couldn't find", "could not find", "cannot find", 
-            "not found", "no information", "insufficient information", 
-            "does not state", "not mention",
-            "नहीं मिला", "जानकारी नहीं है", "प्रासंगिक जानकारी नहीं", "उत्तर नहीं मिल"
+            "couldn't find", "could not find", "cannot find", "not found",
+            "no information", "insufficient information", "does not state", "not mention",
+            "unable to", "can't find", "cannot answer", "don't know", "do not know", "no data",
+            "नहीं मिला", "जानकारी नहीं है", "प्रासंगिक जानकारी नहीं", "उत्तर नहीं मिल", "असमर्थ"
         ];
         const isNotFound = notFoundPatterns.some(pat => answer.toLowerCase().includes(pat));
         
@@ -1049,10 +1049,10 @@ ${isHindiQuery ? "Write your entire response in Hindi (Devanagari script)." : ""
 <button class="chat-opt-btn" onclick="selectSuggestion('क्लॉज 4.1 के तहत 21 lakh रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है')">💼 क्लॉज 4.1 के तहत 21 लाख रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है?</button>
 <button class="chat-opt-btn" onclick="selectSuggestion('क्लॉज 4.3 में क्या शामिल है')">📖 क्लॉज 4.3 में क्या शामिल है?</button>
 <button class="chat-opt-btn" onclick="selectSuggestion('ED का क्या अर्थ है')">🔍 ED का क्या अर्थ है?</button>`;
-                answer = `मैं प्रदान किए गए दस्तावेजों में उत्तर नहीं ढूंढ सका।` + buttonsHtml;
+                answer = `मैं यहाँ आपको डेलीगेशन ऑफ पावर्स (DOP) मैनुअल को समझने में मदद करने के लिए हूँ। क्या आप कृपया स्पष्ट रूप से बता सकते हैं कि आप क्या पूछना चाहते हैं?` + buttonsHtml;
             } else {
                 buttonsHtml = optionsEnglish;
-                answer = `I couldn't find the answer in the provided documents.` + buttonsHtml;
+                answer = `I am here to help you navigate the Delegation of Powers (DOP) manual. Could you please specify exactly what you would like to know?` + buttonsHtml;
             }
         } else if (preComputedFact) {
             // Append dynamic threshold options

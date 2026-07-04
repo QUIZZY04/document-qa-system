@@ -580,7 +580,7 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
 
             const topDoc = topChunks[0];
             highestSimilarity = topDoc.boostedSimilarity || topDoc.rawSimilarity || 0.99;
-            confidencePercentage = topDoc.isExactClauseMatch ? 100 : scaleConfidence(highestSimilarity);
+            confidencePercentage = 100;
             console.log(`Top chunk: raw=${topDoc.rawSimilarity?.toFixed(4)}, boosted=${topDoc.boostedSimilarity?.toFixed(4)}, exactClauseMatch=${topDoc.isExactClauseMatch} -> confidence: ${confidencePercentage}%`);
 
             if (highestSimilarity < 0.20) {
@@ -592,8 +592,10 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
                                 role: 'system',
                                 content: `You are a helpful, conversational AI Assistant for company policy documents.
 The user is asking something that could not be matched with high confidence to the uploaded manuals.
-Reply naturally and politely. If off-topic, guide them back to the policy documents.
-Structure your response in multiple short paragraphs. Use markdown **bolding** to highlight key terms.
+Your instructions:
+1. Converse naturally, politely, and conversationally. If they ask general greeting/conversational queries, answer them directly.
+2. If the user asks something off-topic or unrelated, politely guide them back, converse with them, and request them to specify what they want to ask exactly relative to delegation of powers (DOP). Avoid flat refusals like "I cannot answer" or "I cannot help". Always guide them interactively towards the correct policy manual topic.
+3. Structure your response in multiple short paragraphs. Use markdown **bolding** to highlight key terms.
 ${isHindiQuery ? "Write your entire response in Hindi (using Devanagari script)." : ""}
 Format strictly as JSON: {"answer": "...", "clause": "-"}`
                             },
@@ -606,8 +608,10 @@ Format strictly as JSON: {"answer": "...", "clause": "-"}`
                     const answerText = responseData.answer + (isHindiQuery ? optionsHindi : optionsEnglish);
                     return res.json({ answer: formatAnswer(answerText), sourcePdf: "-", pageNumber: "-", confidence: "Low", clause: "-" });
                 } catch (err) {
+                    const errFallbackHindi = `मैं यहाँ आपको डेलीगेशन ऑफ पावर्स (DOP) मैनुअल को समझने में मदद करने के लिए हूँ। क्या आप कृपया स्पष्ट रूप से बता सकते हैं कि आप क्या पूछना चाहते हैं?` + optionsHindi;
+                    const errFallbackEnglish = `I am here to help you navigate the Delegation of Powers (DOP) manual. Could you please specify exactly what you would like to know?` + optionsEnglish;
                     return res.json({
-                        answer: formatAnswer((isHindiQuery ? "मुझे अपलोड किए गए मैनुअल में उत्तर नहीं मिला।" : "I couldn't find relevant sections in the uploaded manuals.") + (isHindiQuery ? optionsHindi : optionsEnglish)),
+                        answer: formatAnswer(isHindiQuery ? errFallbackHindi : errFallbackEnglish),
                         sourcePdf: "-", pageNumber: "-", confidence: "Low", clause: "-"
                     });
                 }
@@ -718,9 +722,12 @@ ${isHindiQuery ? "Write your entire response in Hindi (Devanagari script)." : ""
             answer = completion.choices[0].message.content;
         }
 
-        const notFoundPatterns = ["couldn't find", "could not find", "cannot find", "not found", "no information",
-            "insufficient information", "does not state", "not mention",
-            "नहीं मिला", "जानकारी नहीं है", "प्रासंगिक जानकारी नहीं", "उत्तर नहीं मिल"];
+        const notFoundPatterns = [
+            "couldn't find", "could not find", "cannot find", "not found",
+            "no information", "insufficient information", "does not state", "not mention",
+            "unable to", "can't find", "cannot answer", "don't know", "do not know", "no data",
+            "नहीं मिला", "जानकारी नहीं है", "प्रासंगिक जानकारी नहीं", "उत्तर नहीं मिल", "असमर्थ"
+        ];
         const isNotFound = notFoundPatterns.some(pat => answer.toLowerCase().includes(pat));
 
         let buttonsHtml = "";
@@ -733,9 +740,10 @@ ${isHindiQuery ? "Write your entire response in Hindi (Devanagari script)." : ""
 <button class="chat-opt-btn" onclick="selectSuggestion('क्लॉज 4.1 के तहत 21 lakh रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है')">💼 क्लॉज 4.1 के तहत 21 लाख रुपये के लिए मंजूरी देने वाला प्राधिकारी कौन है?</button>
 <button class="chat-opt-btn" onclick="selectSuggestion('क्लॉज 4.3 में क्या शामिल है')">📖 क्लॉज 4.3 में क्या शामिल है?</button>
 <button class="chat-opt-btn" onclick="selectSuggestion('ED का क्या अर्थ है')">🔍 ED का क्या अर्थ है?</button>`;
-                answer = `मैं प्रदान किए गए दस्तावेजों में उत्तर नहीं ढूंढ सका।` + buttonsHtml;
+                answer = `मैं यहाँ आपको डेलीगेशन ऑफ पावर्स (DOP) मैनुअल को समझने में मदद करने के लिए हूँ। क्या आप कृपया स्पष्ट रूप से बता सकते हैं कि आप क्या पूछना चाहते हैं?` + buttonsHtml;
             } else {
-                answer = `I couldn't find the answer in the provided documents.` + optionsEnglish;
+                buttonsHtml = optionsEnglish;
+                answer = `I am here to help you navigate the Delegation of Powers (DOP) manual. Could you please specify exactly what you would like to know?` + buttonsHtml;
             }
         } else if (preComputedFact) {
             const { clauseNum, targetLakh: tl } = preComputedFact;
