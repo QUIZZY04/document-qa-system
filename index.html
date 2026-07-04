@@ -495,24 +495,30 @@ html, body {
 }
 
 .chat-opt-btn {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     width: fit-content;
     max-width: 100%;
     text-align: left;
-    background: #f1f5f9;
-    border: none;
-    border-radius: 12px;
-    padding: 10px 16px;
+    background: #eff6ff;
+    border: 1.5px solid #bfdbfe;
+    border-radius: 20px;
+    padding: 8px 16px;
     margin-top: 8px;
     margin-right: 8px;
     cursor: pointer;
     font-size: 13px;
-    font-weight: 500;
-    transition: background 0.2s ease;
-    color: var(--primary);
+    font-weight: 600;
+    line-height: 1.4;
+    transition: background 0.2s ease, border-color 0.2s ease;
+    color: #1d4ed8;
+    white-space: normal;
+    word-break: break-word;
 }
 .chat-opt-btn:hover {
-    background: #e2e8f0;
+    background: #dbeafe;
+    border-color: #93c5fd;
 }
 
 @keyframes typingBounce {
@@ -853,6 +859,16 @@ function typeHtml(container, html, speed = 10, onComplete) {
             const end = html.indexOf('>', i);
             if (end !== -1) {
                 const tag = html.substring(i, end + 1);
+                // Treat entire <button>...</button> as one atomic token
+                if (tag.toLowerCase().startsWith('<button')) {
+                    const closeIdx = html.indexOf('</button>', end + 1);
+                    if (closeIdx !== -1) {
+                        const fullBtn = html.substring(i, closeIdx + 9); // 9 = '</button>'.length
+                        tokens.push({ type: 'tag', val: fullBtn });
+                        i = closeIdx + 9;
+                        continue;
+                    }
+                }
                 tokens.push({ type: 'tag', val: tag });
                 i = end + 1;
                 continue;
