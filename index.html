@@ -843,6 +843,47 @@ import { auth, db } from './js/firebase-config.js';
 import { onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-auth.js";
 import { doc, getDoc } from "https://www.gstatic.com/firebasejs/12.0.0/firebase-firestore.js";
 
+function typeHtml(container, html, speed = 10, onComplete) {
+    const tokens = [];
+    let i = 0;
+    while (i < html.length) {
+        if (html[i] === '<') {
+            const end = html.indexOf('>', i);
+            if (end !== -1) {
+                const tag = html.substring(i, end + 1);
+                tokens.push({ type: 'tag', val: tag });
+                i = end + 1;
+                continue;
+            }
+        }
+        tokens.push({ type: 'text', val: html[i] });
+        i++;
+    }
+
+    let tokenIndex = 0;
+    container.innerHTML = "";
+    
+    function next() {
+        if (tokenIndex >= tokens.length) {
+            if (onComplete) onComplete();
+            return;
+        }
+        
+        const token = tokens[tokenIndex++];
+        container.innerHTML += token.val;
+        
+        const chatHistory = document.getElementById("chat-history");
+        if (chatHistory) {
+            chatHistory.scrollTop = chatHistory.scrollHeight;
+        }
+
+        const delay = token.type === 'tag' ? 0 : speed;
+        setTimeout(next, delay);
+    }
+    
+    next();
+}
+
 // Setup dynamic backend URL settings
 const urlParams = new URLSearchParams(window.location.search);
 if (urlParams.has('backendUrl')) {
@@ -1016,10 +1057,23 @@ window.askQuestion = async function() {
 
         // Replace typing indicator with content inside chat-message
         const innerChatMsg = assistantMsg.querySelector(".chat-message");
-        innerChatMsg.innerHTML = `
-            <div class="msg-content">${data.answer.replace(/\n/g, '<br>')}</div>
-            ${metaHtml}
-        `;
+        const msgContent = innerChatMsg.querySelector(".msg-content");
+        
+        // Remove typing indicator container contents
+        msgContent.innerHTML = "";
+        
+        const mainAnswerHtml = data.answer.replace(/\n/g, '<br>');
+        typeHtml(msgContent, mainAnswerHtml, 10, () => {
+            if (metaHtml) {
+                const metaContainer = document.createElement("div");
+                metaContainer.innerHTML = metaHtml;
+                // Append the citations block element to the message bubble
+                innerChatMsg.appendChild(metaContainer.firstElementChild);
+                
+                // Final scroll adjustments
+                chatHistory.scrollTop = chatHistory.scrollHeight;
+            }
+        });
 
     } catch (err) {
         console.error("QA query failed:", err);

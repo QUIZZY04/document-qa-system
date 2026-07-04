@@ -71,19 +71,35 @@ function expandClauseTargets(clauseNum) {
     const targets = new Set();
     targets.add(clauseNum);
 
-    // Case 1: Decimal clause like "4.2" or "10.3"
-    const decimalMatch = clauseNum.match(/^(\d+)\.(\d+)$/);
+    // Case A: Nested decimal clause with or without letter (e.g. "17.1(b)", "17.1b", "17.1", "4.3")
+    const decimalMatch = clauseNum.match(/^(\d+)\.(\d+)(?:\(([a-z])\)|([a-z]))?$/i);
     if (decimalMatch) {
         const parent = decimalMatch[1];
+        const sub = decimalMatch[2];
+        const letter = decimalMatch[3] || decimalMatch[4];
+        
+        const parentDecimal = `${parent}.${sub}`;
+        targets.add(parentDecimal);
         targets.add(parent);
-        // Add siblings 1 to 8
+        
+        // Add dotted siblings 1 to 8
         for (let i = 1; i <= 8; i++) {
             targets.add(`${parent}.${i}`);
         }
+        
+        // If it has a subclause letter (e.g., "17.1(b)"), expand it with parenthetical/alpha variants
+        if (letter) {
+            const letters = ['a', 'b', 'c', 'd', 'e', 'f'];
+            letters.forEach(let => {
+                targets.add(`${parentDecimal}(${let})`);
+                targets.add(`${parentDecimal}${let}`);
+                targets.add(`${parentDecimal}.${let}`);
+            });
+        }
     }
 
-    // Case 2: Clause with parenthetical sub-clause like "15(a)" or "15(b)"
-    const parenMatch = clauseNum.match(/^(\d+)\(([a-z])\)$/i);
+    // Case B: Integer clause with sub-clause letter (e.g. "15(b)", "15b", "9A")
+    const parenMatch = clauseNum.match(/^(\d+)(?:\(([a-z])\)|([a-z]))$/i);
     if (parenMatch) {
         const parent = parenMatch[1];
         targets.add(parent);
@@ -91,10 +107,12 @@ function expandClauseTargets(clauseNum) {
         const letters = ['a', 'b', 'c', 'd', 'e', 'f'];
         letters.forEach(let => {
             targets.add(`${parent}(${let})`);
+            targets.add(`${parent}${let}`);
+            targets.add(`${parent}.${let}`);
         });
     }
 
-    // Case 3: Parent clause itself, like "4" or "15"
+    // Case C: Integer parent clause itself (e.g. "4", "15")
     const parentMatch = clauseNum.match(/^(\d+)$/);
     if (parentMatch) {
         const parent = parentMatch[1];
@@ -102,10 +120,12 @@ function expandClauseTargets(clauseNum) {
         for (let i = 1; i <= 8; i++) {
             targets.add(`${parent}.${i}`);
         }
-        // Add parenthetical sub-clauses a to f
+        // Add alphabetical sub-clauses
         const letters = ['a', 'b', 'c', 'd', 'e', 'f'];
         letters.forEach(let => {
             targets.add(`${parent}(${let})`);
+            targets.add(`${parent}${let}`);
+            targets.add(`${parent}.${let}`);
         });
     }
 
@@ -410,13 +430,26 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
 
     try {
         console.log(`Searching answers for query: "${question}"...`);
-        const normalizedQuestion = question.toLowerCase()
+        // Normalize Hindi terms to English equivalents for extraction and matching
+        let normalizedQuestion = question.toLowerCase()
             .replace(/(?:रुपये|रुपए|रुपया|रु\.?|रू\.?)/g, 'rs')
             .replace(/(?:लाख|ल\b)/g, 'lakh')
             .replace(/(?:करोड़|करोड|सीआर\b)/g, 'crore')
             .replace(/(?:क्लॉज|क्लाज|धारा)/g, 'clause');
 
-        const clauseRegex = /\b(?:clause|cl|section|si|item|s\.no|no\.?|number)\s+(\d+\.\d+(?:\([a-z]\))?|\d+\s+[a-z]?|\d+(?:\([a-z]\))?|\d+)(?!\w)|(\b\d+\.\d+(?:\([a-z]\))?\b|\b\d+\([a-z]\)(?!\w))/gi;
+        // Standardize all forms of subclauses (e.g. "15 (b)", "15 B", "15 . b" to "15(b)", "15b", "15.b")
+        let prev;
+        do {
+            prev = normalizedQuestion;
+            normalizedQuestion = normalizedQuestion
+                .replace(/(\d+)\s*\(\s*([a-z])\s*\)/g, '$1($2)')
+                .replace(/(\d+)\s*\.\s*([a-z\d]+)/g, '$1.$2')
+                .replace(/\b(\d+)\s+([a-z])\b/g, '$1$2')
+                .replace(/(\d+)\s*(?:sub\s*[-]?\s*clause|part|section|item|no\.?)\s*([a-z])\b/g, '$1$2')
+                .replace(/(\d+)\s*[\/-]\s*([a-z])\b/g, '$1$2');
+        } while (normalizedQuestion !== prev);
+
+        const clauseRegex = /\b(?:clause|cl|section|si|item|s\.no|no\.?|number)\s+(\d+\.\d+(?:\([a-z]\))?|\d+\s*[a-z]?|\d+(?:\([a-z]\))?|\d+)(?!\w)|(\b\d+\.\d+(?:\([a-z]\))?\b|\b\d+\([a-z]\)(?!\w))/gi;
         let clauseMatches = [], match;
         while ((match = clauseRegex.exec(normalizedQuestion)) !== null) {
             if (match[1]) clauseMatches.push(match[1]);
