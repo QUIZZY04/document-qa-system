@@ -518,18 +518,27 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
         do {
             prev = normalizedQuestion;
             normalizedQuestion = normalizedQuestion
-                // "1(c) (ii)" or "1(c) ii" or "1(c)(ii)" -> "1(c)(ii)"
-                .replace(/(\d+)\s*\(\s*([a-z])\s*\)\s*\(?\s*(i+|v|x|[a-z])\s*\)?/gi, (_, n, l, r) => `${n}(${l.toLowerCase()})(${r.toLowerCase()})`)
-                // "15 ( b )" or "15(b)" or "15 (B)" -> "15(b)"
-                .replace(/(\d+)\s*\(\s*([a-z])\s*\)/gi, (_, n, l) => `${n}(${l.toLowerCase()})`)
-                // "15 . b" or "15.3" -> "15.b" / "15.3"
-                .replace(/(\d+)\s*\.\s*([a-z\d]+)/gi, '$1.$2')
-                // "15 b" or "15 B" (standalone letter after number) -> "15b"
-                .replace(/\b(\d+)\s+([a-z])\b/gi, (_, n, l) => `${n}${l.toLowerCase()}`)
-                // "15 sub clause b", "15 sub-clause b", "15 part b" -> "15b"
-                .replace(/(\d+)\s*(?:sub\s*[-]?\s*clause|subclause|part|section|item|no\.?)\s*([a-z])\b/gi, (_, n, l) => `${n}${l.toLowerCase()}`)
-                // "15-b" or "15/b" -> "15b"
-                .replace(/(\d+)\s*[\/-]\s*([a-z])\b/gi, (_, n, l) => `${n}${l.toLowerCase()}`);
+                // 1. Spacing around parentheses: e.g. "1 ( c )" -> "1(c)", "1 (c)" -> "1(c)"
+                .replace(/(\d+)\s*\(\s*([a-z])\s*\)/gi, '$1($2)')
+                .replace(/(\d+)\s*\(\s*(i+|v|x)\s*\)/gi, '$1($2)')
+                .replace(/([a-z])\s*\(\s*(i+|v|x)\s*\)/gi, '$1($2)')
+                
+                // 2. Pre-combine single letters/numbers with space/dot/dash/slash: e.g. "1 c" -> "1(c)", "1-c" -> "1(c)", "1.c" -> "1(c)"
+                .replace(/\b(\d+)\s*(?:sub\s*[-]?\s*clause|part|section|item|no\.?|[-/])\s*([a-z])\b/gi, '$1($2)')
+                .replace(/\b(\d+)\s+([a-z])\b/gi, '$1($2)')
+                .replace(/\b(\d+)\s*\.\s*([a-z])\b/gi, '$1($2)')
+                
+                // 2b. Combine digit-letter with space-subitem: e.g. "1c ii" -> "1(c)(ii)", "1c-ii" -> "1(c)(ii)"
+                .replace(/\b(\d+)([a-z])\s*(?:sub\s*[-]?\s*clause|part|section|item|no\.?|[-/])?\s*\(?\s*(i+|v|x|[a-z])\s*\)?(?!\w)/gi, '$1($2)($3)')
+                
+                // 3. Double nest matching: "1(c) ii" or "1(c) (ii)" or "1(c) part ii" -> "1(c)(ii)"
+                .replace(/(\d+)\s*\(\s*([a-z])\s*\)\s*(?:sub\s*[-]?\s*clause|part|section|item|no\.?|[-/])?\s*\(?\s*(i+|v|x|[a-z])\s*\)?(?!\w)/gi, '$1($2)($3)')
+                
+                // 4. Decimal sub-clause matching: "22.2 iii" or "22.2(iii)" or "22.2-iii" -> "22.2(iii)"
+                .replace(/(\d+\.\d+)\s*(?:sub\s*[-]?\s*clause|part|section|item|no\.?|[-/])?\s*\(?\s*(i+|v|x|[a-z])\s*\)?(?!\w)/gi, '$1($2)')
+                
+                // 5. Spacing cleanup inside double parenthesis: e.g. "1(c)( ii)" -> "1(c)(ii)"
+                .replace(/(\d+)\s*\(\s*([a-z])\s*\)\s*\(\s*(i+|v|x|[a-z])\s*\)/gi, '$1($2)($3)');
         } while (normalizedQuestion !== prev);
 
         const clauseRegex = /\b(?:clause|cl|section|si|item|s\.no|no\.?|number)\s+(\d+(?:\.\d+)?(?:\([a-z\d]+\)){0,2}|\d+\s*[a-z]?|\d+)(?!\w)|((?<!\w)\d+(?:\.\d+)?(?:\([a-z\d]+\)){1,2}(?!\w))/gi;
