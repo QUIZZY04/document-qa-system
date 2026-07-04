@@ -495,24 +495,24 @@ html, body {
 }
 
 .chat-opt-btn {
-    display: block;
-    width: 100%;
+    display: inline-block;
+    width: fit-content;
+    max-width: 100%;
     text-align: left;
-    background: var(--white);
-    border: 1px solid var(--border-light);
+    background: #f1f5f9;
+    border: none;
     border-radius: 12px;
-    padding: 12px 16px;
-    margin-top: 10px;
+    padding: 10px 16px;
+    margin-top: 8px;
+    margin-right: 8px;
     cursor: pointer;
-    font-size: 13.5px;
+    font-size: 13px;
     font-weight: 500;
-    transition: all 0.2s ease;
+    transition: background 0.2s ease;
     color: var(--primary);
 }
 .chat-opt-btn:hover {
-    background: #f9fafb;
-    border-color: #d1d5db;
-    transform: translateY(-1px);
+    background: #e2e8f0;
 }
 
 @keyframes typingBounce {
