@@ -70,62 +70,49 @@ function scaleConfidence(similarity) {
 function expandClauseTargets(clauseNum) {
     const targets = new Set();
     targets.add(clauseNum);
+    // Full alphabet coverage
+    const LETTERS = ['a','b','c','d','e','f','g','h','i','j','k','l','m','n','o','p','q','r','s','t','u','v','w','x','y','z'];
 
-    // Case A: Nested decimal clause with or without letter (e.g. "17.1(b)", "17.1b", "17.1", "4.3")
+    // Case A: Nested decimal clause with or without letter (e.g. "17.1(b)", "17.1b", "4.3")
     const decimalMatch = clauseNum.match(/^(\d+)\.(\d+)(?:\(([a-z])\)|([a-z]))?$/i);
     if (decimalMatch) {
         const parent = decimalMatch[1];
         const sub = decimalMatch[2];
-        const letter = decimalMatch[3] || decimalMatch[4];
-        
+        const letter = (decimalMatch[3] || decimalMatch[4] || '').toLowerCase();
         const parentDecimal = `${parent}.${sub}`;
         targets.add(parentDecimal);
         targets.add(parent);
-        
-        // Add dotted siblings 1 to 8
-        for (let i = 1; i <= 8; i++) {
-            targets.add(`${parent}.${i}`);
-        }
-        
-        // If it has a subclause letter (e.g., "17.1(b)"), expand it with parenthetical/alpha variants
+        for (let i = 1; i <= 8; i++) targets.add(`${parent}.${i}`);
         if (letter) {
-            const letters = ['a', 'b', 'c', 'd', 'e', 'f'];
-            letters.forEach(let => {
-                targets.add(`${parentDecimal}(${let})`);
-                targets.add(`${parentDecimal}${let}`);
-                targets.add(`${parentDecimal}.${let}`);
+            LETTERS.forEach(l => {
+                targets.add(`${parentDecimal}(${l})`);
+                targets.add(`${parentDecimal}${l}`);
+                targets.add(`${parentDecimal}.${l}`);
             });
         }
     }
 
-    // Case B: Integer clause with sub-clause letter (e.g. "15(b)", "15b", "9A")
+    // Case B: Integer clause with sub-clause letter (e.g. "15(b)", "15b", "9A", "1d")
     const parenMatch = clauseNum.match(/^(\d+)(?:\(([a-z])\)|([a-z]))$/i);
     if (parenMatch) {
         const parent = parenMatch[1];
         targets.add(parent);
-        // Add siblings a to f
-        const letters = ['a', 'b', 'c', 'd', 'e', 'f'];
-        letters.forEach(let => {
-            targets.add(`${parent}(${let})`);
-            targets.add(`${parent}${let}`);
-            targets.add(`${parent}.${let}`);
+        LETTERS.forEach(l => {
+            targets.add(`${parent}(${l})`);
+            targets.add(`${parent}${l}`);
+            targets.add(`${parent}.${l}`);
         });
     }
 
-    // Case C: Integer parent clause itself (e.g. "4", "15")
+    // Case C: Integer parent clause itself (e.g. "4", "15", "19")
     const parentMatch = clauseNum.match(/^(\d+)$/);
     if (parentMatch) {
         const parent = parentMatch[1];
-        // Add decimal sub-clauses 1 to 8
-        for (let i = 1; i <= 8; i++) {
-            targets.add(`${parent}.${i}`);
-        }
-        // Add alphabetical sub-clauses
-        const letters = ['a', 'b', 'c', 'd', 'e', 'f'];
-        letters.forEach(let => {
-            targets.add(`${parent}(${let})`);
-            targets.add(`${parent}${let}`);
-            targets.add(`${parent}.${let}`);
+        for (let i = 1; i <= 8; i++) targets.add(`${parent}.${i}`);
+        LETTERS.forEach(l => {
+            targets.add(`${parent}(${l})`);
+            targets.add(`${parent}${l}`);
+            targets.add(`${parent}.${l}`);
         });
     }
 
@@ -196,7 +183,8 @@ const AUTHORITY_NAMES = {
 const AUTHORITY_ORDER = ['SM', 'DGM', 'AGM', 'GM', 'ED'];
 
 function extractClauseRow(chunks, clauseNumber) {
-    const siRe = new RegExp(`\\[SI:\\s*${clauseNumber.replace('.', '\\.')}[\\s\\]|]`, 'i');
+    // Match [SI: 19], [SI: 19.], [SI: 19 ], [SI: 19|] — trailing dot covered by \\.?
+    const siRe = new RegExp(`\\[SI:\\s*${clauseNumber.replace('.', '\\.')}[\\s\\.\\]|]`, 'i');
     for (const chunk of chunks) {
         const lines = (chunk.text || '').split('\n');
         for (let i = 0; i < lines.length; i++) {
@@ -437,16 +425,22 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
             .replace(/(?:करोड़|करोड|सीआर\b)/g, 'crore')
             .replace(/(?:क्लॉज|क्लाज|धारा)/g, 'clause');
 
-        // Standardize all forms of subclauses (e.g. "15 (b)", "15 B", "15 . b" to "15(b)", "15b", "15.b")
+        // Standardize all forms of subclauses — covers ALL letter variants:
+        // "15 (b)", "15 B", "15 . b", "15b", "15B", "15-b", "15/b", "15 sub clause b", "15 part d" etc.
         let prev;
         do {
             prev = normalizedQuestion;
             normalizedQuestion = normalizedQuestion
-                .replace(/(\d+)\s*\(\s*([a-z])\s*\)/g, '$1($2)')
-                .replace(/(\d+)\s*\.\s*([a-z\d]+)/g, '$1.$2')
-                .replace(/\b(\d+)\s+([a-z])\b/g, '$1$2')
-                .replace(/(\d+)\s*(?:sub\s*[-]?\s*clause|part|section|item|no\.?)\s*([a-z])\b/g, '$1$2')
-                .replace(/(\d+)\s*[\/-]\s*([a-z])\b/g, '$1$2');
+                // "15 ( b )" or "15(b)" or "15 (B)" -> "15(b)"
+                .replace(/(\d+)\s*\(\s*([a-z])\s*\)/gi, (_, n, l) => `${n}(${l.toLowerCase()})`)
+                // "15 . b" or "15.3" -> "15.b" / "15.3"
+                .replace(/(\d+)\s*\.\s*([a-z\d]+)/gi, '$1.$2')
+                // "15 b" or "15 B" (standalone letter after number) -> "15b"
+                .replace(/\b(\d+)\s+([a-z])\b/gi, (_, n, l) => `${n}${l.toLowerCase()}`)
+                // "15 sub clause b", "15 sub-clause b", "15 part b" -> "15b"
+                .replace(/(\d+)\s*(?:sub\s*[-]?\s*clause|subclause|part|section|item|no\.?)\s*([a-z])\b/gi, (_, n, l) => `${n}${l.toLowerCase()}`)
+                // "15-b" or "15/b" -> "15b"
+                .replace(/(\d+)\s*[\/-]\s*([a-z])\b/gi, (_, n, l) => `${n}${l.toLowerCase()}`);
         } while (normalizedQuestion !== prev);
 
         const clauseRegex = /\b(?:clause|cl|section|si|item|s\.no|no\.?|number)\s+(\d+\.\d+(?:\([a-z]\))?|\d+\s*[a-z]?|\d+(?:\([a-z]\))?|\d+)(?!\w)|(\b\d+\.\d+(?:\([a-z]\))?\b|\b\d+\([a-z]\)(?!\w))/gi;
