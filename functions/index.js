@@ -73,6 +73,22 @@ function expandClauseTargets(clauseNum) {
     // Full alphabet coverage
     const LETTERS = ['a','b','c','d','e','f','g','h','i','j','k','l','m','n','o','p','q','r','s','t','u','v','w','x','y','z'];
 
+    // Case D: Double nested clause (e.g. "1(c)(ii)", "1(c)(i)", "22.2(i)")
+    const doubleMatch = clauseNum.match(/^(\d+(?:\.\d+)?)\s*\(([^)]+)\)\s*\(([^)]+)\)$/i);
+    if (doubleMatch) {
+        const parent = doubleMatch[1];
+        const sub1 = doubleMatch[2];
+        const sub2 = doubleMatch[3];
+        
+        targets.add(parent);
+        targets.add(`${parent}(${sub1})`);
+        targets.add(`${parent}${sub1}`);
+        targets.add(`${parent}.${sub1}`);
+        
+        targets.add(`${parent}(${sub1})(${sub2})`);
+        targets.add(`${parent}(${sub1})${sub2}`);
+    }
+
     // Case A: Nested decimal clause with or without letter (e.g. "17.1(b)", "17.1b", "4.3")
     const decimalMatch = clauseNum.match(/^(\d+)\.(\d+)(?:\(([a-z])\)|([a-z]))?$/i);
     if (decimalMatch) {
@@ -126,6 +142,8 @@ function parseLimitToLakh(raw) {
         .replace(/[.]+$/, '').trim();
     if (!s || s === '-' || s === 'NIL') return 0;
     if (s.includes('FULL') || s.includes('POWER')) return Infinity;
+    if (s === 'LAKH') return 10; // "Upto lakh" defaults to 10
+    
     s = s.replace(/\bSO\b/g, '50')
          .replace(/\bS(\d)/g, '5$1')
          .replace(/(\d)[O]/gi, '$10')
@@ -182,9 +200,76 @@ const AUTHORITY_NAMES = {
 };
 const AUTHORITY_ORDER = ['SM', 'DGM', 'AGM', 'GM', 'ED'];
 
+function getBaseSiTag(clauseNumber) {
+    const doubleMatch = clauseNumber.match(/^(\d+(?:\.\d+)?)\s*\(([^)]+)\)\s*\(([^)]+)\)$/i);
+    if (doubleMatch) {
+        return {
+            parentRow: doubleMatch[1].includes('.') ? `${doubleMatch[1]}` : `${doubleMatch[1]}(${doubleMatch[2]})`,
+            baseRowSI: doubleMatch[1].includes('.') ? doubleMatch[3] : doubleMatch[2],
+            subItem: doubleMatch[3]
+        };
+    }
+    const parenMatch = clauseNumber.match(/^(\d+)\s*\(([^)]+)\)$/i);
+    if (parenMatch) {
+        return {
+            parentRow: parenMatch[1],
+            baseRowSI: parenMatch[2],
+            subItem: null
+        };
+    }
+    return {
+        parentRow: clauseNumber,
+        baseRowSI: clauseNumber,
+        subItem: null
+    };
+}
+
+function getSubItemIndex(subItem) {
+    const s = subItem.toLowerCase().trim();
+    if (s === 'i' || s === 'a') return 0;
+    if (s === 'ii' || s === 'b') return 1;
+    if (s === 'iii' || s === 'c') return 2;
+    if (s === 'iv' || s === 'd') return 3;
+    if (s === 'v' || s === 'e') return 4;
+    return 0;
+}
+
+function splitCellValues(val) {
+    if (!val) return [];
+    const clean = val.replace(/\s+/g, ' ').trim();
+    const match = clean.match(/(?:Full\s+Powers?|Upto\s+(?:Rs\.?\s*)?[\d.]+\s*(?:Lakh|Crore|Cr|er|1akh)?|Upto\s+lakh|Rs\.?\s*[\d.]+\s*(?:Lakh|Crore|Cr|er|1akh)?|NIL|-)$/i);
+    if (match) {
+        const second = match[0].trim();
+        const first = clean.substring(0, clean.length - second.length).trim();
+        if (first) {
+            return [first.replace(/[.,\s]+$/, ''), second];
+        }
+        return [second];
+    }
+    return [clean];
+}
+
+function getSubItemRow(row, subItem) {
+    const idx = getSubItemIndex(subItem);
+    const splitField = (fieldVal) => {
+        const parts = splitCellValues(fieldVal);
+        if (parts.length === 0) return '';
+        if (parts.length === 1) return parts[0];
+        return parts[idx] || parts[parts.length - 1];
+    };
+    return {
+        Nature: row.Nature,
+        ED: splitField(row.ED),
+        GM: splitField(row.GM),
+        AGM: splitField(row.AGM),
+        DGM: splitField(row.DGM),
+        SM: splitField(row.SM)
+    };
+}
+
 function extractClauseRow(chunks, clauseNumber) {
-    // Match [SI: 19], [SI: 19.], [SI: 19 ], [SI: 19|] — trailing dot covered by \\.?
-    const siRe = new RegExp(`\\[SI:\\s*${clauseNumber.replace('.', '\\.')}[\\s\\.\\]|]`, 'i');
+    const { baseRowSI, subItem } = getBaseSiTag(clauseNumber);
+    const siRe = new RegExp(`\\[SI:\\s*${baseRowSI.replace('.', '\\.')}(?:\\)|\\.|\\s*\\]|\\s*\\(|\\s*\\||\\s+\\w)`, 'i');
     for (const chunk of chunks) {
         const lines = (chunk.text || '').split('\n');
         for (let i = 0; i < lines.length; i++) {
@@ -205,15 +290,12 @@ function extractClauseRow(chunks, clauseNumber) {
                 SM: extract(line, 'SM') || '' 
             };
 
-            // If the limits are empty or contain placeholder text like "Upto Rs.",
-            // scan the next few lines in the chunk to find actual numeric limits.
             const needsLimits = (r) => {
                 const keys = ['ED', 'GM', 'AGM', 'DGM', 'SM'];
                 return keys.every(k => !r[k] || r[k].toLowerCase() === 'upto rs' || r[k].toLowerCase() === 'upto rs.');
             };
 
             if (needsLimits(row)) {
-                // Scan the next 3 lines for actual limits
                 for (let nextIdx = i + 1; nextIdx < Math.min(lines.length, i + 4); nextIdx++) {
                     const nextLine = lines[nextIdx];
                     const nextED = extract(nextLine, 'ED');
@@ -239,7 +321,12 @@ function extractClauseRow(chunks, clauseNumber) {
                 }
             }
 
-            if (row.ED || row.GM || row.AGM || row.DGM || row.SM) return row;
+            if (row.ED || row.GM || row.AGM || row.DGM || row.SM) {
+                if (subItem) {
+                    row = getSubItemRow(row, subItem);
+                }
+                return row;
+            }
         }
     }
     return null;
@@ -431,6 +518,8 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
         do {
             prev = normalizedQuestion;
             normalizedQuestion = normalizedQuestion
+                // "1(c) (ii)" or "1(c) ii" or "1(c)(ii)" -> "1(c)(ii)"
+                .replace(/(\d+)\s*\(\s*([a-z])\s*\)\s*\(?\s*(i+|v|x|[a-z])\s*\)?/gi, (_, n, l, r) => `${n}(${l.toLowerCase()})(${r.toLowerCase()})`)
                 // "15 ( b )" or "15(b)" or "15 (B)" -> "15(b)"
                 .replace(/(\d+)\s*\(\s*([a-z])\s*\)/gi, (_, n, l) => `${n}(${l.toLowerCase()})`)
                 // "15 . b" or "15.3" -> "15.b" / "15.3"
@@ -443,7 +532,7 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
                 .replace(/(\d+)\s*[\/-]\s*([a-z])\b/gi, (_, n, l) => `${n}${l.toLowerCase()}`);
         } while (normalizedQuestion !== prev);
 
-        const clauseRegex = /\b(?:clause|cl|section|si|item|s\.no|no\.?|number)\s+(\d+\.\d+(?:\([a-z]\))?|\d+\s*[a-z]?|\d+(?:\([a-z]\))?|\d+)(?!\w)|(\b\d+\.\d+(?:\([a-z]\))?\b|\b\d+\([a-z]\)(?!\w))/gi;
+        const clauseRegex = /\b(?:clause|cl|section|si|item|s\.no|no\.?|number)\s+(\d+(?:\.\d+)?(?:\([a-z\d]+\)){0,2}|\d+\s*[a-z]?|\d+)(?!\w)|((?<!\w)\d+(?:\.\d+)?(?:\([a-z\d]+\)){1,2}(?!\w))/gi;
         let clauseMatches = [], match;
         while ((match = clauseRegex.exec(normalizedQuestion)) !== null) {
             if (match[1]) clauseMatches.push(match[1]);

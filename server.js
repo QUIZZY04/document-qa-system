@@ -96,6 +96,22 @@ function expandClauseTargets(clauseNum) {
     // Full alphabet coverage
     const LETTERS = ['a','b','c','d','e','f','g','h','i','j','k','l','m','n','o','p','q','r','s','t','u','v','w','x','y','z'];
 
+    // Case D: Double nested clause (e.g. "1(c)(ii)", "1(c)(i)", "22.2(i)")
+    const doubleMatch = clauseNum.match(/^(\d+(?:\.\d+)?)\s*\(([^)]+)\)\s*\(([^)]+)\)$/i);
+    if (doubleMatch) {
+        const parent = doubleMatch[1];
+        const sub1 = doubleMatch[2];
+        const sub2 = doubleMatch[3];
+        
+        targets.add(parent);
+        targets.add(`${parent}(${sub1})`);
+        targets.add(`${parent}${sub1}`);
+        targets.add(`${parent}.${sub1}`);
+        
+        targets.add(`${parent}(${sub1})(${sub2})`);
+        targets.add(`${parent}(${sub1})${sub2}`);
+    }
+
     // Case A: Nested decimal clause with or without letter (e.g. "17.1(b)", "17.1b", "4.3")
     const decimalMatch = clauseNum.match(/^(\d+)\.(\d+)(?:\(([a-z])\)|([a-z]))?$/i);
     if (decimalMatch) {
@@ -156,6 +172,8 @@ function parseLimitToLakh(raw) {
         .trim();
     if (!s || s === '-' || s === 'NIL') return 0;
     if (s.includes('FULL') || s.includes('POWER')) return Infinity;
+    if (s === 'LAKH') return 10; // "Upto lakh" defaults to 10
+    
     // OCR corrections: letter O → 0, letter S before O or digit → 5
     s = s.replace(/\bSO\b/g, '50')   // "SO" → "50" (most common: Rs.SO lakh)
          .replace(/\bS(\d)/g, '5$1') // "S<digit>" → "5<digit>"
@@ -214,9 +232,76 @@ const AUTHORITY_NAMES = {
 };
 const AUTHORITY_ORDER = ['SM', 'DGM', 'AGM', 'GM', 'ED'];
 
+function getBaseSiTag(clauseNumber) {
+    const doubleMatch = clauseNumber.match(/^(\d+(?:\.\d+)?)\s*\(([^)]+)\)\s*\(([^)]+)\)$/i);
+    if (doubleMatch) {
+        return {
+            parentRow: doubleMatch[1].includes('.') ? `${doubleMatch[1]}` : `${doubleMatch[1]}(${doubleMatch[2]})`,
+            baseRowSI: doubleMatch[1].includes('.') ? doubleMatch[3] : doubleMatch[2],
+            subItem: doubleMatch[3]
+        };
+    }
+    const parenMatch = clauseNumber.match(/^(\d+)\s*\(([^)]+)\)$/i);
+    if (parenMatch) {
+        return {
+            parentRow: parenMatch[1],
+            baseRowSI: parenMatch[2],
+            subItem: null
+        };
+    }
+    return {
+        parentRow: clauseNumber,
+        baseRowSI: clauseNumber,
+        subItem: null
+    };
+}
+
+function getSubItemIndex(subItem) {
+    const s = subItem.toLowerCase().trim();
+    if (s === 'i' || s === 'a') return 0;
+    if (s === 'ii' || s === 'b') return 1;
+    if (s === 'iii' || s === 'c') return 2;
+    if (s === 'iv' || s === 'd') return 3;
+    if (s === 'v' || s === 'e') return 4;
+    return 0;
+}
+
+function splitCellValues(val) {
+    if (!val) return [];
+    const clean = val.replace(/\s+/g, ' ').trim();
+    const match = clean.match(/(?:Full\s+Powers?|Upto\s+(?:Rs\.?\s*)?[\d.]+\s*(?:Lakh|Crore|Cr|er|1akh)?|Upto\s+lakh|Rs\.?\s*[\d.]+\s*(?:Lakh|Crore|Cr|er|1akh)?|NIL|-)$/i);
+    if (match) {
+        const second = match[0].trim();
+        const first = clean.substring(0, clean.length - second.length).trim();
+        if (first) {
+            return [first.replace(/[.,\s]+$/, ''), second];
+        }
+        return [second];
+    }
+    return [clean];
+}
+
+function getSubItemRow(row, subItem) {
+    const idx = getSubItemIndex(subItem);
+    const splitField = (fieldVal) => {
+        const parts = splitCellValues(fieldVal);
+        if (parts.length === 0) return '';
+        if (parts.length === 1) return parts[0];
+        return parts[idx] || parts[parts.length - 1];
+    };
+    return {
+        Nature: row.Nature,
+        ED: splitField(row.ED),
+        GM: splitField(row.GM),
+        AGM: splitField(row.AGM),
+        DGM: splitField(row.DGM),
+        SM: splitField(row.SM)
+    };
+}
+
 function extractClauseRow(chunks, clauseNumber) {
-    // Match [SI: 19], [SI: 19.], [SI: 19 ], [SI: 19|] — trailing dot covered by \.?
-    const siRe = new RegExp(`\\[SI:\\s*${clauseNumber.replace('.', '\\.')}[\\s\\.\\]|]`, 'i');
+    const { baseRowSI, subItem } = getBaseSiTag(clauseNumber);
+    const siRe = new RegExp(`\\[SI:\\s*${baseRowSI.replace('.', '\\.')}(?:\\)|\\.|\\s*\\]|\\s*\\(|\\s*\\||\\s+\\w)`, 'i');
     for (const chunk of chunks) {
         for (const line of (chunk.text || '').split('\n')) {
             if (!siRe.test(line)) continue;
@@ -224,9 +309,20 @@ function extractClauseRow(chunks, clauseNumber) {
                 const m = line.match(new RegExp(`\\[${key}:\\s*([^\\]]+)\\]`, 'i'));
                 return m ? m[1].trim() : null;
             };
-            const row = { Nature: extract('Nature of Power'), ED: extract('ED'),
-                GM: extract('GM'), AGM: extract('AGM'), DGM: extract('DGM'), SM: extract('SM') };
-            if (row.ED || row.GM || row.AGM || row.DGM || row.SM) return row;
+            let row = { 
+                Nature: extract('Nature of Power') || '', 
+                ED: extract('ED') || '',
+                GM: extract('GM') || '', 
+                AGM: extract('AGM') || '', 
+                DGM: extract('DGM') || '', 
+                SM: extract('SM') || '' 
+            };
+            if (row.ED || row.GM || row.AGM || row.DGM || row.SM) {
+                if (subItem) {
+                    row = getSubItemRow(row, subItem);
+                }
+                return row;
+            }
         }
     }
     return null;
@@ -490,40 +586,68 @@ db.collection("documents").where("status", "==", "Processing")
                         const prefixedText = `[Context - Document: ${docData.name} | Page: ${pageNumber} | Table Columns: ${currentHeaders}]\n${chunkText}`;
                         
                         // Extract clause numbers contained in this chunk for high-accuracy direct retrieval
+                        // Extract clause numbers contained in this chunk for high-accuracy direct retrieval
                         const clauseSet = new Set();
-                        const siRegex = /\[SI:\s*([^\]]+)\]/gi;
-                        let siMatch;
-                        siRegex.lastIndex = 0;
-                        while ((siMatch = siRegex.exec(chunkText)) !== null) {
+                        const chunkLines = chunkText.split('\n');
+                        
+                        const pageParentMap = {
+                            3: "1", 4: "2", 5: "3", 6: "3", 7: "4", 8: "5", 9: "5",
+                            10: "6", 11: "6", 12: "7b", 13: "8", 14: "8", 15: "9",
+                            16: "11", 17: "13", 18: "15", 19: "15", 20: "17", 21: "17",
+                            22: "18", 23: "20", 24: "22", 25: "24", 26: "26"
+                        };
+                        
+                        let activeParent = pageParentMap[pageNumber] || null;
+                        let activeSubParent = null;
+
+                        for (const line of chunkLines) {
+                            const siMatch = line.match(/\[SI:\s*([^\]]+)\]/i);
+                            if (!siMatch) continue;
+                            
                             const val = siMatch[1].trim();
-                            // Match full clause patterns: 15(a), 15a, 3A, 17.1(b), 17.1b, 4.3, 19., 19 etc.
-                            const fullMatch = val.match(/^(\d+(?:\.\d+)?(?:\([a-z]\)|[a-z])?)\.?/i);
-                            if (fullMatch) {
-                                const raw = fullMatch[1].toLowerCase().replace(/\./g,'');
-                                // Store canonical forms
-                                const numOnly = val.match(/^(\d+(?:\.\d+)?)/);
-                                if (numOnly) {
-                                    clauseSet.add(numOnly[1]); // e.g. "18.1"
-                                    // Also add the integer parent ("18" from "18.1")
-                                    const intParent = numOnly[1].split('.')[0];
-                                    clauseSet.add(intParent);
+                            
+                            // 1. Major parent clause
+                            const numMatch = val.match(/^(\d+(?:\.\d+)?)/);
+                            if (numMatch) {
+                                const rawNum = numMatch[1];
+                                activeParent = rawNum;
+                                activeSubParent = null;
+                                clauseSet.add(rawNum);
+                                clauseSet.add(rawNum.split('.')[0]);
+                            }
+                            
+                            // 2. Sub-clause letter
+                            const letterMatch = val.match(/^([a-z])\)/i);
+                            if (letterMatch && activeParent) {
+                                const letter = letterMatch[1].toLowerCase();
+                                activeSubParent = letter;
+                                clauseSet.add(`${activeParent}(${letter})`);
+                                clauseSet.add(`${activeParent}${letter}`);
+                                clauseSet.add(`${activeParent}.${letter}`);
+                            }
+                            
+                            // 3. Sub-items (roman or letters)
+                            const cleanVal = val.replace(/^([a-z])\)/i, '');
+                            const items = [];
+                            const itemRegex = /\b(i+|v|x|[a-z])\b/gi;
+                            let m;
+                            while ((m = itemRegex.exec(cleanVal)) !== null) {
+                                items.push(m[1].toLowerCase());
+                            }
+                            
+                            if (items.length > 0) {
+                                if (activeParent && activeSubParent) {
+                                    const prefix = `${activeParent}(${activeSubParent})`;
+                                    items.forEach(item => {
+                                        clauseSet.add(`${prefix}(${item})`);
+                                        clauseSet.add(`${prefix}${item}`);
+                                    });
+                                } else if (activeParent) {
+                                    items.forEach(item => {
+                                        clauseSet.add(`${activeParent}(${item})`);
+                                        clauseSet.add(`${activeParent}${item}`);
+                                    });
                                 }
-                                // Store with letter if present
-                                const withLetter = val.match(/^(\d+(?:\.\d+)?)\s*\(?([a-z])\)?/i);
-                                if (withLetter) {
-                                    const num = withLetter[1];
-                                    const letter = withLetter[2].toLowerCase();
-                                    clauseSet.add(`${num}(${letter})`);
-                                    clauseSet.add(`${num}${letter}`);
-                                    clauseSet.add(`${num}.${letter}`);
-                                    // Also store letter variants under integer parent
-                                    const iParent = num.split('.')[0];
-                                    clauseSet.add(`${iParent}(${letter})`);
-                                    clauseSet.add(`${iParent}${letter}`);
-                                    clauseSet.add(`${iParent}.${letter}`);
-                                }
-                            } else if (val.length < 15) {
-                                clauseSet.add(val.toLowerCase());
                             }
                         }
                         const clauses = Array.from(clauseSet);
@@ -714,10 +838,14 @@ Feel free to click any of these options or ask your own question!`;
 
         // Standardize all forms of subclauses — covers ALL letter variants:
         // "15 (b)", "15 B", "15 . b", "15b", "15B", "15-b", "15/b", "15 sub clause b", "15 part d" etc.
+        // Standardize all forms of subclauses — covers ALL letter variants:
+        // "15 (b)", "15 B", "15 . b", "15b", "15B", "15-b", "15/b", "15 sub clause b", "15 part d" etc.
         let prev;
         do {
             prev = normalizedQuestion;
             normalizedQuestion = normalizedQuestion
+                // "1(c) (ii)" or "1(c) ii" or "1(c)(ii)" -> "1(c)(ii)"
+                .replace(/(\d+)\s*\(\s*([a-z])\s*\)\s*\(?\s*(i+|v|x|[a-z])\s*\)?/gi, (_, n, l, r) => `${n}(${l.toLowerCase()})(${r.toLowerCase()})`)
                 // "15 ( b )" or "15(b)" or "15 (B)" -> "15(b)"
                 .replace(/(\d+)\s*\(\s*([a-z])\s*\)/gi, (_, n, l) => `${n}(${l.toLowerCase()})`)
                 // "15 . b" or "15.3" -> "15.3" / "15.b"
@@ -731,7 +859,7 @@ Feel free to click any of these options or ask your own question!`;
         } while (normalizedQuestion !== prev);
         
         // Extract section/clause numbers with parenthetical matching
-        const clauseRegex = /\b(?:clause|cl|section|si|item|s\.no|no\.?|number)\s+(\d+\.\d+(?:\([a-z]\))?|\d+\s*[a-z]?|\d+(?:\([a-z]\))?|\d+)(?!\w)|(\b\d+\.\d+(?:\([a-z]\))?\b|\b\d+\([a-z]\)(?!\w))/gi;
+        const clauseRegex = /\b(?:clause|cl|section|si|item|s\.no|no\.?|number)\s+(\d+(?:\.\d+)?(?:\([a-z\d]+\)){0,2}|\d+\s*[a-z]?|\d+)(?!\w)|((?<!\w)\d+(?:\.\d+)?(?:\([a-z\d]+\)){1,2}(?!\w))/gi;
         let clauseMatches = [], match;
         while ((match = clauseRegex.exec(normalizedQuestion)) !== null) {
             if (match[1]) clauseMatches.push(match[1]);
