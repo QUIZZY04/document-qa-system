@@ -256,22 +256,20 @@ html, body {
 }
 
 .suggestion-card {
-    background: var(--white);
-    border: 1px solid var(--border-light);
-    border-radius: 12px;
-    padding: 14px 16px;
+    background: transparent;
+    border: none;
+    padding: 8px 0;
     text-align: left;
     cursor: pointer;
-    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     display: flex;
     flex-direction: column;
     gap: 4px;
+    transition: color 0.2s ease;
 }
 
-.suggestion-card:hover {
-    background: #f9fafb;
-    border-color: #d1d5db;
-    transform: translateY(-1px);
+.suggestion-card:hover .suggestion-title {
+    color: var(--primary);
+    text-decoration: underline;
 }
 
 .suggestion-title {
@@ -639,21 +637,19 @@ html, body {
     .suggestion-card {
         flex: none;
         width: 100%;
-        background: #f1f5f9; /* Slate-100 background block instead of border outline */
+        background: transparent;
         border: none;
-        border-left: 3px solid var(--primary); /* subtle left indigo accent */
-        border-radius: 8px;
-        padding: 12px 14px;
+        padding: 8px 0;
         cursor: pointer;
         display: flex;
         flex-direction: column;
         gap: 4px;
         box-shadow: none;
-        transition: background 0.15s ease;
         min-height: auto;
     }
-    .suggestion-card:hover, .suggestion-card:active {
-        background: #e2e8f0; /* Slate-200 on click */
+    .suggestion-card:hover .suggestion-title, .suggestion-card:active .suggestion-title {
+        color: var(--primary);
+        text-decoration: underline;
     }
     .suggestion-title {
         font-size: 14px;

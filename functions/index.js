@@ -584,37 +584,16 @@ Format your response strictly as JSON: {"answer": "...", "clause": "Greeting"}`
             console.log(`Top chunk: raw=${topDoc.rawSimilarity?.toFixed(4)}, boosted=${topDoc.boostedSimilarity?.toFixed(4)}, exactClauseMatch=${topDoc.isExactClauseMatch} -> confidence: ${confidencePercentage}%`);
 
             if (highestSimilarity < 0.20) {
-                try {
-                    const completion = await getOpenAI().chat.completions.create({
-                        model: 'gpt-4o-mini',
-                        messages: [
-                            {
-                                role: 'system',
-                                content: `You are a helpful, conversational AI Assistant for company policy documents.
-The user is asking something that could not be matched with high confidence to the uploaded manuals.
-Your instructions:
-1. Converse naturally, politely, and conversationally. If they ask general greeting/conversational queries, answer them directly.
-2. If the user asks something off-topic or unrelated, politely guide them back, converse with them, and request them to specify what they want to ask exactly relative to delegation of powers (DOP). Avoid flat refusals like "I cannot answer" or "I cannot help". Always guide them interactively towards the correct policy manual topic.
-3. Structure your response in multiple short paragraphs. Use markdown **bolding** to highlight key terms.
-${isHindiQuery ? "Write your entire response in Hindi (using Devanagari script)." : ""}
-Format strictly as JSON: {"answer": "...", "clause": "-"}`
-                            },
-                            { role: 'user', content: question }
-                        ],
-                        response_format: { type: 'json_object' },
-                        temperature: 0.7
-                    });
-                    const responseData = JSON.parse(completion.choices[0].message.content);
-                    const answerText = responseData.answer + (isHindiQuery ? optionsHindi : optionsEnglish);
-                    return res.json({ answer: formatAnswer(answerText), sourcePdf: "-", pageNumber: "-", confidence: "Low", clause: "-" });
-                } catch (err) {
-                    const errFallbackHindi = `मैं यहाँ आपको डेलीगेशन ऑफ पावर्स (DOP) मैनुअल को समझने में मदद करने के लिए हूँ। क्या आप कृपया स्पष्ट रूप से बता सकते हैं कि आप क्या पूछना चाहते हैं?` + optionsHindi;
-                    const errFallbackEnglish = `I am here to help you navigate the Delegation of Powers (DOP) manual. Could you please specify exactly what you would like to know?` + optionsEnglish;
-                    return res.json({
-                        answer: formatAnswer(isHindiQuery ? errFallbackHindi : errFallbackEnglish),
-                        sourcePdf: "-", pageNumber: "-", confidence: "Low", clause: "-"
-                    });
-                }
+                const fallbackHindi = `मैं आपका दस्तावेज़ एआई सहायक (Document AI Assistant) हूँ, जो अपलोड किए गए डेलीगेशन ऑफ पावर्स (DOP) मैनुअल में विशेषज्ञता रखता है। मैं केवल इन दस्तावेजों से संबंधित प्रश्नों के उत्तर दे सकता हूँ (जैसे मंजूरी देने वाले प्राधिकारी, वित्तीय सीमाएं और नीति नियम)। कृपया DOP मैनुअल से संबंधित प्रश्न पूछें।${optionsHindi}`;
+                const fallbackEnglish = `I am your Document AI Assistant, specialized in the uploaded Delegation of Powers (DOP) policy manuals. I can only answer questions related to these documents (such as approval authorities, threshold limits, and policy clauses). Please submit a query related to the DOP manuals.${optionsEnglish}`;
+                
+                return res.json({
+                    answer: formatAnswer(isHindiQuery ? fallbackHindi : fallbackEnglish),
+                    sourcePdf: "-",
+                    pageNumber: "-",
+                    confidence: "Low",
+                    clause: "-"
+                });
             }
         }
 

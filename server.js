@@ -862,50 +862,17 @@ Feel free to click any of these options or ask your own question!`;
             console.log(`Top chunk: raw=${topDoc.rawSimilarity?.toFixed(4)}, boosted=${topDoc.boostedSimilarity?.toFixed(4)}, exactClauseMatch=${topDoc.isExactClauseMatch} -> confidence: ${confidencePercentage}%`);
             
             if (highestSimilarity < 0.20) {
-                try {
-                    const completion = await openai.chat.completions.create({
-                        model: 'gpt-4o-mini',
-                        messages: [
-                            {
-                                role: 'system',
-                                content: `You are a helpful, conversational AI Assistant for company policy documents.
-The user is either asking a general conversational query (e.g. "are you correct?", "who are you?", "thank you"), or asking something that could not be matched with high confidence to the uploaded manuals.
-Your instructions:
-1. If the user is asking a general question about yourself, your capabilities, your accuracy, or giving general feedback/greetings, reply naturally, politely, and conversationally (like ChatGPT). Explain how you work (grounded in the policy manuals using vector search and deterministic limit checks) but answer their immediate query directly.
-2. If the user is asking an entirely off-topic query (e.g. recipes, general coding, unrelated trivia), politely converse with them, guide them back to the policy manual topic, and request them to specify what they want to ask exactly relative to delegation of powers (DOP). Avoid saying "I cannot answer" or "I cannot help you". Instead, interact with them conversationally and prompt them to check details of the policy manual.
-3. Formulate a friendly, interactive follow-up asking what they'd like to check.
-4. Structure your response in multiple short, distinct paragraphs (separated by double newlines '\\n\\n') to make it easy to read.
-5. Use markdown **bolding** to highlight important terms.
-${isHindiQuery ? "Since the user is asking/interacting in Hindi/Hinglish, write your entire response in Hindi (using Devanagari script)." : ""}
-Format your response strictly as JSON: {"answer": "...", "clause": "-"}`
-                        },
-                        { role: 'user', content: question }
-                    ],
-                    response_format: { type: 'json_object' },
-                    temperature: 0.7
-                });
-                const responseData = JSON.parse(completion.choices[0].message.content);
-                const answerText = responseData.answer + (isHindiQuery ? optionsHindi : optionsEnglish);
+                const fallbackHindi = `मैं आपका दस्तावेज़ एआई सहायक (Document AI Assistant) हूँ, जो अपलोड किए गए डेलीगेशन ऑफ पावर्स (DOP) मैनुअल में विशेषज्ञता रखता है। मैं केवल इन दस्तावेजों से संबंधित प्रश्नों के उत्तर दे सकता हूँ (जैसे मंजूरी देने वाले प्राधिकारी, वित्तीय सीमाएं और नीति नियम)। कृपया DOP मैनुअल से संबंधित प्रश्न पूछें।${optionsHindi}`;
+                const fallbackEnglish = `I am your Document AI Assistant, specialized in the uploaded Delegation of Powers (DOP) policy manuals. I can only answer questions related to these documents (such as approval authorities, threshold limits, and policy clauses). Please submit a query related to the DOP manuals.${optionsEnglish}`;
+                
                 return res.json({
-                    answer: formatAnswer(answerText),
-                    sourcePdf: "-",
-                    pageNumber: "-",
-                    confidence: "Low",
-                    clause: "-"
-                });
-            } catch (err) {
-                console.error("GPT low similarity helper error:", err);
-                const errFallbackHindi = `मैं यहाँ आपको डेलीगेशन ऑफ पावर्स (DOP) मैनुअल को समझने में मदद करने के लिए हूँ। क्या आप कृपया स्पष्ट रूप से बता सकते हैं कि आप क्या पूछना चाहते हैं?` + optionsHindi;
-                const errFallbackEnglish = `I am here to help you navigate the Delegation of Powers (DOP) manual. Could you please specify exactly what you would like to know?` + optionsEnglish;
-                return res.json({
-                    answer: formatAnswer(isHindiQuery ? errFallbackHindi : errFallbackEnglish),
+                    answer: formatAnswer(isHindiQuery ? fallbackHindi : fallbackEnglish),
                     sourcePdf: "-",
                     pageNumber: "-",
                     confidence: "Low",
                     clause: "-"
                 });
             }
-        }
     }
         
         // ── 5. Deterministic authority resolution for DOP threshold queries ────
