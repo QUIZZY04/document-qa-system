@@ -820,6 +820,36 @@ html, body {
     .send-btn.active:hover, .send-btn.active:active {
         background: var(--primary-hover) !important;
     }
+    /* Mic button — mobile-friendly touch target */
+    .mic-btn {
+        width: 36px !important;
+        height: 36px !important;
+        border-radius: 50% !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        color: #64748b !important;
+        background: transparent !important;
+        -webkit-tap-highlight-color: transparent;
+    }
+    .mic-btn:active {
+        background: #f1f5f9 !important;
+    }
+    .mic-btn.recording {
+        color: #ef4444 !important;
+        background: #fee2e2 !important;
+    }
+    /* Keep tooltip above the button, centred, never overflow on narrow screens */
+    .mic-tooltip {
+        bottom: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 11px;
+        padding: 4px 8px;
+        max-width: 160px;
+        text-align: center;
+        white-space: normal;
+    }
     .input-tip {
         display: none;
     }
