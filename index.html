@@ -1210,6 +1210,109 @@ window.toggleVoiceInput = function () {
     }
 };
 
+// ── Small-Talk / Conversational Interceptor ───────────────────────────────────
+function getTimeGreeting() {
+    const h = new Date().getHours();
+    if (h >= 5  && h < 12) return 'Good morning';
+    if (h >= 12 && h < 17) return 'Good afternoon';
+    if (h >= 17 && h < 21) return 'Good evening';
+    return 'Good night';
+}
+
+const SMALL_TALK = [
+    // ── Greetings ──────────────────────────────────────────────────────────
+    {
+        patterns: [/^\s*(hi|hello|hey|helo|hii|hiii|namaste|namaskar|salaam|salam|assalam|hy)\s*[!.]*\s*$/i],
+        reply: () => {
+            const g = getTimeGreeting();
+            const nudges = [
+                'Feel free to ask me anything about the documents — like approving authorities, clauses, or delegation of powers.',
+                'You can ask about clauses, approving authorities, financial limits, or any document content.',
+                'Try asking something like "Who approves purchase above ₹10 lakh?" or "What does clause 4.3 say?"',
+            ];
+            const nudge = nudges[Math.floor(Math.random() * nudges.length)];
+            return `${g}! 😊 I'm your Document Knowledge Assistant.\n\n${nudge}`;
+        }
+    },
+    // ── Good morning ───────────────────────────────────────────────────────
+    {
+        patterns: [/good\s*morn/i],
+        reply: () => `Good morning! ☀️ Hope you're having a great start to the day.\n\nWhenever you're ready, I can help you look up clauses, approving authorities, financial limits, or anything else from the documents. Just ask away!`
+    },
+    // ── Good afternoon ─────────────────────────────────────────────────────
+    {
+        patterns: [/good\s*after/i],
+        reply: () => `Good afternoon! 🌤️ Hope your day is going well.\n\nI'm here to assist with any document queries — clauses, delegation of powers, approving authorities, and more. What would you like to know?`
+    },
+    // ── Good evening ───────────────────────────────────────────────────────
+    {
+        patterns: [/good\s*eve/i],
+        reply: () => `Good evening! 🌇 Great to have you here.\n\nIf you have any document-related queries to wrap up for the day — clauses, financial powers, approving authorities — I'm ready to help. What would you like to check?`
+    },
+    // ── Good night / Bye / Goodbye ─────────────────────────────────────────
+    {
+        patterns: [/good\s*night/i, /^\s*(bye|goodbye|good\s*bye|tata|ta\s*ta|ciao|see\s*you|see\s*ya|take\s*care|alvida|khuda\s*hafiz)\s*[!.]*\s*$/i],
+        reply: () => `Good night! 🌙 Have a restful evening.\n\nIf you have any last-minute document queries before you go, feel free to ask. Otherwise, see you next time! 👋`
+    },
+    // ── How are you ────────────────────────────────────────────────────────
+    {
+        patterns: [/how\s*(are|r)\s*(you|u)\b/i, /how'?s?\s*(it going|things|everything)\b/i, /what'?s?\s*up\b/i, /\bkya\s*hal\b/i, /\bkaisa\s*(hai|hain|ho)\b/i],
+        reply: () => `I'm doing great, thank you for asking! 😊\n\nI'm fully charged and ready to help you with any document queries. Whether it's finding out who's the approving authority for a financial limit, what a specific clause covers, or anything else — just ask!`
+    },
+    // ── Thank you ──────────────────────────────────────────────────────────
+    {
+        patterns: [/\b(thank\s*you|thanks|thx|shukriya|dhanyawad|bahut\s*shukriya)\b/i],
+        reply: () => `You're most welcome! 🙏\n\nIs there anything else you'd like to look up? I can help with clauses, financial powers, approving authorities, or any other document content.`
+    },
+    // ── Who are you / What can you do ─────────────────────────────────────
+    {
+        patterns: [/who\s*are\s*you/i, /what\s*(are|r)\s*you/i, /what\s*can\s*you\s*do/i, /tell\s*me\s*about\s*your?self/i],
+        reply: () => `I'm your **Document Knowledge Assistant** 🤖📚\n\nI can help you:\n• Find approving authorities for financial amounts\n• Look up specific clauses and what they cover\n• Check delegation of powers\n• Search for abbreviations and their meanings\n• Answer any question based on the uploaded documents\n\nJust type or speak your query and I'll find the answer instantly!`
+    },
+    // ── OK / Hmm / Sure ────────────────────────────────────────────────────
+    {
+        patterns: [/^\s*(ok|okay|ok\.?|hmm+|sure|alright|acha|accha|theek|thik\s*hai|ji)\s*[!.]*\s*$/i],
+        reply: () => `Anytime! 😊 Feel free to ask me any document-related question whenever you're ready.\n\nFor example: *"Who is the approving authority for ₹50 lakh under clause 4.1?"*`
+    },
+    // ── Help ───────────────────────────────────────────────────────────────
+    {
+        patterns: [/^\s*help\s*[!.?]*\s*$/i, /\bhelp\s*me\b/i, /\bhow\s*to\s*(use|start|begin)\b/i],
+        reply: () => `Sure, I'm here to help! 🙋\n\nYou can ask me questions like:\n• *"Who approves expenditure above ₹10 lakh?"*\n• *"What does clause 4.3 cover?"*\n• *"What is the full form of ED?"*\n• *"What are the powers of GM (Finance)?"*\n\nYou can also use the 🎤 **microphone button** to speak your question instead of typing!`
+    },
+];
+
+/**
+ * Returns a small-talk reply string if the message matches a casual pattern,
+ * or null if it should be sent to the document backend.
+ */
+function smallTalkReply(text) {
+    const cleaned = text.trim();
+    for (const entry of SMALL_TALK) {
+        for (const pattern of entry.patterns) {
+            if (pattern.test(cleaned)) {
+                return entry.reply();
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * Renders a local (no-API) bot reply with the typewriter effect.
+ */
+function renderLocalReply(assistantMsg, replyText) {
+    const innerChatMsg = assistantMsg.querySelector('.chat-message');
+    const msgContent   = innerChatMsg.querySelector('.msg-content');
+    msgContent.innerHTML = '';
+    // Convert newlines and *bold* to HTML
+    const html = replyText
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.+?)\*/g, '<em>$1</em>')
+        .replace(/\n/g, '<br>');
+    typeHtml(msgContent, html, 12);
+}
+
+
 window.askQuestion = async function() {
     const questionInput = document.getElementById("question");
     const question = questionInput.value.trim();
@@ -1266,6 +1369,15 @@ window.askQuestion = async function() {
     chatHistory.scrollTop = chatHistory.scrollHeight;
 
     try {
+        // ── Check for small talk first (no API call needed) ──────────────────
+        const localReply = smallTalkReply(question);
+        if (localReply) {
+            // Small artificial delay to feel natural (like typing)
+            await new Promise(r => setTimeout(r, 600));
+            renderLocalReply(assistantMsg, localReply);
+            return; // Skip backend fetch entirely
+        }
+
         const backendUrl = localStorage.getItem('backendUrl') || 'https://asia-south1-robotic-af198.cloudfunctions.net/api';
         const response = await fetch(`${backendUrl}/ask`, {
             method: "POST",
