@@ -302,29 +302,49 @@ function getSubItemRow(row, subItem) {
 function extractClauseRow(chunks, clauseNumber) {
     const { baseRowSI, subItem } = getBaseSiTag(clauseNumber);
     const siRe = new RegExp(`\\[SI:\\s*${baseRowSI.replace('.', '\\.')}(?:\\)|\\.|\\s*\\]|\\s*\\(|\\s*\\||\\s+\\w)`, 'i');
-    for (const chunk of chunks) {
-        for (const line of (chunk.text || '').split('\n')) {
-            if (!siRe.test(line)) continue;
-            const extract = (key) => {
-                const m = line.match(new RegExp(`\\[${key}:\\s*([^\\]]+)\\]`, 'i'));
-                return m ? m[1].trim() : null;
-            };
-            let row = { 
-                Nature: extract('Nature of Power') || '', 
-                ED: extract('ED') || '',
-                GM: extract('GM') || '', 
-                AGM: extract('AGM') || '', 
-                DGM: extract('DGM') || '', 
-                SM: extract('SM') || '' 
-            };
-            if (row.ED || row.GM || row.AGM || row.DGM || row.SM) {
-                if (subItem) {
-                    row = getSubItemRow(row, subItem);
+
+    const tryExtract = (chunks, re, subItem) => {
+        for (const chunk of chunks) {
+            for (const line of (chunk.text || '').split('\n')) {
+                if (!re.test(line)) continue;
+                const extract = (key) => {
+                    const m = line.match(new RegExp(`\\[${key}:\\s*([^\\]]+)\\]`, 'i'));
+                    return m ? m[1].trim() : null;
+                };
+                let row = {
+                    Nature: extract('Nature of Power') || '',
+                    ED: extract('ED') || '',
+                    GM: extract('GM') || '',
+                    AGM: extract('AGM') || '',
+                    DGM: extract('DGM') || '',
+                    SM: extract('SM') || ''
+                };
+                if (row.ED || row.GM || row.AGM || row.DGM || row.SM) {
+                    if (subItem) row = getSubItemRow(row, subItem);
+                    return row;
                 }
-                return row;
             }
         }
+        return null;
+    };
+
+    // Primary lookup: exact SI tag match
+    let row = tryExtract(chunks, siRe, subItem);
+    if (row) return row;
+
+    // Fallback: if clause is decimal like "4.1", try the sub-item letter in the parent clause "4"
+    const decFallback = clauseNumber.match(/^(\d+)\.(\d+)$/);
+    if (decFallback) {
+        const parentNum = decFallback[1];
+        const subIdx   = parseInt(decFallback[2], 10) - 1; // 4.1 -> index 0, 4.2 -> index 1 …
+        // Try SI: parentNum
+        const parentRe = new RegExp(`\\[SI:\\s*${parentNum}(?:\\)|\\.|\\s*\\]|\\s*\\(|\\s*\\||\\s+\\w)`, 'i');
+        const letterLabels = ['a','b','c','d','e','f','g','h'];
+        const subLetter = letterLabels[subIdx] || null;
+        row = tryExtract(chunks, parentRe, subLetter);
+        if (row) return row;
     }
+
     return null;
 }
 
@@ -887,6 +907,25 @@ Feel free to click any of these options or ask your own question!`;
                 }
             });
         });
+
+        // Always include the root parent clause number so that chunks containing
+        // Remarks/Notes (stored under the parent SI tag) are fetched alongside sub-clause chunks.
+        const rootParents = new Set();
+        clauseMatches.forEach(cl => {
+            // decimal: "4.1" -> "4"; paren: "4(a)" -> "4"; plain: "4" -> "4"
+            const rootMatch = cl.match(/^(\d+)/);
+            if (rootMatch) rootParents.add(rootMatch[1]);
+        });
+        rootParents.forEach(rp => {
+            if (!clauseTargets.includes(rp)) clauseTargets.push(rp);
+            // Also add decimal sub-clauses of the root (e.g. 4.1 … 4.8) in case remarks
+            // are stored under sibling pages
+            for (let i = 1; i <= 8; i++) {
+                const decKey = `${rp}.${i}`;
+                if (!clauseTargets.includes(decKey)) clauseTargets.push(decKey);
+            }
+        });
+
         clauseTargets = clauseTargets.slice(0, 30); // Firestore array-contains-any limit
 
         if (clauseTargets.length > 0) {
@@ -915,39 +954,39 @@ Feel free to click any of these options or ask your own question!`;
                 isExactClauseMatch: true
             }));
             allChunks.sort((a, b) => a.pageNumber - b.pageNumber);
-            topChunks = allChunks.slice(0, 8);
+            topChunks = allChunks.slice(0, 5);
             console.log(`Bypassed embedding creation. Using ${topChunks.length} direct clause chunks.`);
         } else {
-            // Fallback: Generate query embedding and perform vector search
-            console.log("No direct clause matches. Generating query embedding for vector search...");
-            const queryEmbeddingResponse = await openai.embeddings.create({
-                model: "text-embedding-3-small",
-                input: question
-            });
+            // Fallback: Generate query embedding AND run keyword search in PARALLEL for speed
+            console.log("No direct clause matches. Generating query embedding + keyword search in parallel...");
+
+            const keywordTargets = [...queryKeywords].slice(0, 10);
+
+            // Run embedding creation and keyword tag query in parallel
+            const [queryEmbeddingResponse, keywordSnap] = await Promise.all([
+                openai.embeddings.create({ model: "text-embedding-3-small", input: question }),
+                keywordTargets.length > 0
+                    ? db.collection("chunks").where("tags", "array-contains-any", keywordTargets).get().catch(err => {
+                        console.error("Keyword metadata query error:", err); return { forEach: () => {} };
+                      })
+                    : Promise.resolve({ forEach: () => {} })
+            ]);
+
             const queryEmbedding = queryEmbeddingResponse.data[0].embedding;
 
             let keywordChunks = [];
-            const keywordTargets = [...queryKeywords].slice(0, 10);
-            if (keywordTargets.length > 0) {
-                try {
-                    const directQuery2 = db.collection("chunks").where("tags", "array-contains-any", keywordTargets);
-                    const snap2 = await directQuery2.get();
-                    snap2.forEach(doc => {
-                        keywordChunks.push({ id: doc.id, ...doc.data() });
-                    });
-                } catch (err) {
-                    console.error("Keyword metadata query error:", err);
-                }
-            }
+            keywordSnap.forEach(doc => {
+                keywordChunks.push({ id: doc.id, ...doc.data() });
+            });
 
-            const query = db.collection("chunks").findNearest({
+            const vectorQuery = db.collection("chunks").findNearest({
                 vectorField: 'embedding',
                 queryVector: queryEmbedding,
-                limit: 150,
+                limit: 100,
                 distanceMeasure: 'COSINE'
             });
 
-            const chunksSnap = await query.get();
+            const chunksSnap = await vectorQuery.get();
             if (chunksSnap.empty && keywordChunks.length === 0) {
                 return res.json({
                     answer: formatAnswer(isHindiQuery 
@@ -960,18 +999,16 @@ Feel free to click any of these options or ask your own question!`;
                 });
             }
             
-            // Merge vector and direct search results, removing duplicates
+            // Merge vector and keyword results, removing duplicates
             const mergedChunksMap = new Map();
-            keywordChunks.forEach(c => {
-                mergedChunksMap.set(c.id, c);
-            });
+            keywordChunks.forEach(c => { mergedChunksMap.set(c.id, c); });
             chunksSnap.forEach(doc => {
                 if (!mergedChunksMap.has(doc.id)) {
                     mergedChunksMap.set(doc.id, { id: doc.id, ...doc.data() });
                 }
             });
 
-            // 3. Build all chunks with cosine similarity and keyword boosting
+            // Build all chunks with cosine similarity and keyword boosting
             let allChunks = [];
             mergedChunksMap.forEach((chunkData) => {
                 const vec = chunkData.embedding ? chunkData.embedding.toArray() : [];
@@ -994,7 +1031,6 @@ Feel free to click any of these options or ask your own question!`;
                     }
                 }
                 
-                // Apply keyword boosting to score
                 const boostedSimilarity = isExactClauseMatch ? similarity + 0.35 : similarity;
                 allChunks.push({
                     ...chunkData,
@@ -1004,9 +1040,8 @@ Feel free to click any of these options or ask your own question!`;
                 });
             });
 
-            // Sort chunks by boosted similarity score descending
             allChunks.sort((a, b) => b.boostedSimilarity - a.boostedSimilarity);
-            topChunks = allChunks.slice(0, 8);
+            topChunks = allChunks.slice(0, 5);
 
             const topDoc = topChunks[0];
             highestSimilarity = topDoc.boostedSimilarity || topDoc.rawSimilarity || 0.99;
@@ -1043,6 +1078,32 @@ Feel free to click any of these options or ask your own question!`;
                 preComputedFact = { clauseNum, targetLakh, authority, clauseRow, limitTable };
                 console.log(`[RESOLVE] Clause ${clauseNum}, target=${targetLakh}L → ${authority.name} (${authority.limitText})`);
 
+                // ── Extract remarks/notes from topChunks for this clause ──────────
+                // Remarks stored in the document (e.g. below clause 4.3) apply to all
+                // sub-clauses (4.1, 4.2, 4.3) and MUST always be surfaced in the answer.
+                const rootParent = clauseNum.match(/^(\d+)/)?.[1] || clauseNum;
+                const remarkPatterns = [
+                    /\b(?:remark|note|important|condition|exception|subject to|provided that)s?\b/i
+                ];
+                let remarksText = '';
+                for (const chunk of topChunks) {
+                    const lines = (chunk.text || '').split('\n');
+                    let inRemarks = false;
+                    for (const line of lines) {
+                        // Start capturing when a Remarks/Note header is found
+                        if (/^\s*(?:remark|note)[s]?\s*[:\-]?/i.test(line)) {
+                            inRemarks = true;
+                        }
+                        if (inRemarks && line.trim().length > 5) {
+                            remarksText += line.trim() + ' ';
+                        }
+                        // Stop after a blank line following the remarks block
+                        if (inRemarks && line.trim() === '') break;
+                    }
+                    if (remarksText) break;
+                }
+                remarksText = remarksText.trim();
+
                 // Zero-Latency Local Formatting Bypass
                 const targetDisplay = targetLakh >= 100 ? `Rs. ${(targetLakh / 100).toFixed(targetLakh % 100 === 0 ? 0 : 2)} crore` : `Rs. ${targetLakh} lakh`;
                 let answerText = "";
@@ -1051,10 +1112,12 @@ Feel free to click any of these options or ask your own question!`;
 
                 if (isHindiQuery) {
                     answerText = `**क्लॉज ${clauseNum}** के तहत, **${targetDisplay}** की राशि के लिए सक्षम प्राधिकारी **${authority.name}** हैं (उनकी मंजूरी सीमा: **${authority.limitText}**)।`;
+                    if (remarksText) answerText += `\n\n**टिप्पणी:** ${remarksText}`;
                     buttonsHtml = `\n\n<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause ${clauseNum} for Rs 21 lakh')">💼 क्या क्लॉज ${clauseNum} के तहत 21 लाख रुपये के लिए मंजूरी मिल सकती है?</button>
 <button class="chat-opt-btn" onclick="selectSuggestion('what does clause ${otherClause} cover?')">📖 क्लॉज ${otherClause} में क्या शामिल है?</button>`;
                 } else {
                     answerText = `Under **Clause ${clauseNum}**, the competent approving authority for **${targetDisplay}** is the **${authority.name}** (approval limit: **${authority.limitText}**).`;
+                    if (remarksText) answerText += `\n\n**Remarks:** ${remarksText}`;
                     buttonsHtml = `\n\n<button class="chat-opt-btn" onclick="selectSuggestion('who is approving authority under clause ${clauseNum} for Rs 21 lakh')">💼 Check Rs 21 lakh under Clause ${clauseNum}</button>
 <button class="chat-opt-btn" onclick="selectSuggestion('what does clause ${otherClause} cover?')">📖 What does Clause ${otherClause} cover?</button>`;
                 }
@@ -1135,7 +1198,8 @@ ${isHindiQuery ? "Write your entire response in Hindi (Devanagari script)." : ""
                 { role: 'user',   content: userPrompt }
             ],
             response_format: { type: 'json_object' },
-            temperature: 0
+            temperature: 0,
+            max_tokens: 350
         });
         
         let answer = "";
