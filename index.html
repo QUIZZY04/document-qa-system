@@ -543,6 +543,13 @@ html, body {
     margin-top: 8px;
 }
 
+/* Mobile-only home-page elements — hidden on desktop */
+.mobile-hero,
+.suggestions-section,
+.suggestions-label {
+    display: none;
+}
+
 /* Typing Indicator Animation */
 .typing-indicator {
     display: flex;
@@ -638,21 +645,12 @@ html, body {
 
     /* ── Design tokens (mobile overrides) ─────────────────────────────── */
     :root {
-        /* Primary action: #1e3a8a (Blue-900) on white → 14.4:1  ✅ AA/AAA */
-        --primary:        #1e3a8a;
-        --primary-hover:  #1e2d6b;
-
-        /* App shell: very-light slate so cards (white) pop visually */
-        --bg-app:         #eef2f7;
-
-        /* Body text: near-black on any light surface → 19:1  ✅ */
+        --primary:        #4f46e5;
+        --primary-hover:  #4338ca;
+        --bg-app:         #f0f4ff;
         --text-main:      #0f172a;
-
-        /* Secondary text: Slate-800 on white → 14.5:1  ✅, on #eef2f7 → 13:1  ✅ */
         --text-muted:     #1e293b;
-
-        /* Border: Slate-500 on white → 4.6:1  ✅ (meets 3:1 UI-component minimum) */
-        --border-light:   #64748b;
+        --border-light:   #6366f1;
     }
 
     /* ── Drawer Sidebar ────────────────────────────────────────────────── */
@@ -667,87 +665,144 @@ html, body {
     .sidebar.open  { transform: translateX(0); }
     .sidebar.collapsed { width: 280px; transform: translateX(-100%); }
 
-    /* ── Top Nav Header ────────────────────────────────────────────────── */
+    /* ── Top Nav Header — colourful gradient ──────────────────────────── */
     .top-nav {
         height: 56px;
         padding: 0 16px;
-        background: #ffffff;
-        /* #cbd5e1 on #ffffff → 2.1:1 — decorative divider, not text, OK */
-        border-bottom: 1.5px solid #cbd5e1;
+        background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+        border-bottom: none;
+        box-shadow: 0 2px 12px rgba(79,70,229,0.25);
     }
     .top-nav-btn {
         width: 40px; height: 40px;
         display: flex; align-items: center; justify-content: center;
-        border-radius: 8px;
-        /* icon: #0f172a on #f1f5f9 → 18:1  ✅ */
-        color: #0f172a;
-        background: #f1f5f9;
-        /* border: #64748b on #f1f5f9 → 5:1  ✅ */
-        border: 1.5px solid #64748b;
+        border-radius: 10px;
+        color: #ffffff;
+        background: rgba(255,255,255,0.18);
+        border: 1.5px solid rgba(255,255,255,0.4);
+        backdrop-filter: blur(4px);
     }
     .top-nav-btn svg { width: 20px; height: 20px; }
     .top-nav-title {
         font-size: 16px; font-weight: 700;
-        /* #0f172a on #ffffff → 19:1  ✅ */
-        color: #0f172a;
+        color: #ffffff;
+        letter-spacing: 0.01em;
     }
 
     /* ── Chat history area ─────────────────────────────────────────────── */
-    .chat-history { padding: 16px 12px; gap: 20px; }
+    .chat-history { padding: 0 0 16px 0; gap: 20px; }
 
-    /* ── Welcome / Home screen ─────────────────────────────────────────── */
+    /* ── Welcome / Home screen — hero banner ───────────────────────────── */
     .welcome-container {
-        padding: 20px 12px;
+        padding: 0;
         max-width: 100%; margin: 0;
         display: flex; flex-direction: column;
         align-items: stretch; text-align: left;
     }
-    .welcome-container h2 {
-        font-size: 20px; font-weight: 700;
-        /* #0f172a on #eef2f7 → 17.5:1  ✅ */
-        color: #0f172a;
-        line-height: 1.3; margin-bottom: 16px;
+
+    /* Colourful hero banner at the top */
+    .mobile-hero {
+        background: linear-gradient(145deg, #4f46e5 0%, #7c3aed 50%, #a855f7 100%);
+        padding: 24px 20px 28px;
+        position: relative;
+        overflow: hidden;
+    }
+    .mobile-hero::before {
+        content: '';
+        position: absolute;
+        top: -30px; right: -30px;
+        width: 140px; height: 140px;
+        background: rgba(255,255,255,0.08);
+        border-radius: 50%;
+    }
+    .mobile-hero::after {
+        content: '';
+        position: absolute;
+        bottom: -20px; left: 10px;
+        width: 90px; height: 90px;
+        background: rgba(255,255,255,0.06);
+        border-radius: 50%;
+    }
+    .mobile-hero-icon {
+        font-size: 36px;
+        margin-bottom: 10px;
+        display: block;
+        filter: drop-shadow(0 2px 6px rgba(0,0,0,0.2));
+    }
+    .mobile-hero-title {
+        font-size: 22px;
+        font-weight: 800;
+        color: #ffffff;
+        line-height: 1.2;
+        margin: 0 0 6px;
         letter-spacing: -0.02em;
     }
+    .mobile-hero-sub {
+        font-size: 13px;
+        font-weight: 500;
+        color: rgba(255,255,255,0.82);
+        margin: 0;
+        line-height: 1.4;
+    }
+
+    /* Hide original h2 — replaced by hero banner markup */
+    .welcome-container > h2 { display: none; }
     .bot-icon { display: none; }
 
-    /* ── Suggestion cards ──────────────────────────────────────────────── */
+    /* Show mobile-only elements */
+    .mobile-hero    { display: block; }
+    .suggestions-section { display: block; padding: 16px 16px 8px; }
+    .suggestions-label {
+        display: block;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #4f46e5;
+        margin-bottom: 10px;
+    }
+
+    /* ── Suggestion cards — colourful accent borders ──────────────────── */
     .suggestions-grid {
         display: flex; flex-direction: column;
         gap: 10px; width: 100%; padding: 0;
-        margin-top: 4px; align-items: flex-start;
+        margin-top: 0; align-items: stretch;
     }
     .suggestions-grid::-webkit-scrollbar { display: none; }
     /* Show only first 2 on mobile */
     .suggestions-grid .suggestion-card:nth-child(n+3) { display: none; }
 
     .suggestion-card {
-        flex: none; width: fit-content; max-width: 100%;
-        /* White card on #eef2f7 bg → visible separation ✅ */
+        flex: none; width: 100%; max-width: 100%;
         background: #ffffff;
-        /* Border: #64748b on #ffffff → 4.6:1  ✅ UI-component */
-        border: 1.5px solid #cbd5e1;
+        border: none;
+        border-left: 4px solid #4f46e5;   /* default indigo — overridden per-card below */
         border-radius: 12px;
-        padding: 10px 16px;
+        padding: 12px 16px;
         cursor: pointer;
-        display: inline-flex; flex-direction: column; gap: 3px;
-        box-shadow: 0 1px 4px rgba(15,23,42,0.07);
+        display: flex; flex-direction: column; gap: 4px;
+        box-shadow: 0 2px 8px rgba(79,70,229,0.08);
         min-height: auto;
-        transition: background 0.15s ease, border-color 0.15s ease;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
     }
-    .suggestion-card:hover, .suggestion-card:active {
-        background: #f1f5f9;
-        border-color: #64748b;
+    .suggestion-card:active {
+        transform: scale(0.98);
+        box-shadow: 0 1px 4px rgba(79,70,229,0.10);
     }
+
+    /* Each card gets a unique colour accent */
+    .suggestions-grid .suggestion-card:nth-child(1) { border-left-color: #4f46e5; } /* indigo  */
+    .suggestions-grid .suggestion-card:nth-child(2) { border-left-color: #7c3aed; } /* violet  */
+    .suggestions-grid .suggestion-card:nth-child(3) { border-left-color: #059669; } /* emerald */
+    .suggestions-grid .suggestion-card:nth-child(4) { border-left-color: #d97706; } /* amber   */
+
     .suggestion-title {
-        font-size: 14px; font-weight: 600; line-height: 1.3;
-        /* #0f172a on #ffffff → 19:1  ✅ */
-        color: #0f172a;
+        font-size: 14px; font-weight: 700; line-height: 1.3;
+        color: #0f172a; /* 19:1 ✅ */
     }
     .suggestion-desc {
         font-size: 12px; font-weight: 500; line-height: 1.35;
-        /* #1e293b on #ffffff → 14.5:1  ✅  (was #334155 = 7.4:1 on #f1f5f9 — improved) */
-        color: #1e293b;
+        color: #374151; /* 8.6:1 on white ✅ */
     }
 
     /* ── Chat message bubbles ──────────────────────────────────────────── */
@@ -903,30 +958,42 @@ html, body {
         <div id="chat-history" class="chat-history">
             <!-- Centered Welcome Container -->
             <div id="welcome-container" class="welcome-container">
-                <div class="bot-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 0 1 7.54 16.59c-.43.51-1.07.82-1.74.82H6.2c-.67 0-1.31-.31-1.74-.82A10 10 0 0 1 12 2z"></path><path d="M8 14h8"></path><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="M20 12h2"></path><path d="M2 12h2"></path></svg>
+
+                <!-- Colourful hero banner (mobile only — hidden on desktop via CSS) -->
+                <div class="mobile-hero">
+                    <span class="mobile-hero-icon">🤖</span>
+                    <p class="mobile-hero-title">How can I help you today?</p>
+                    <p class="mobile-hero-sub">Ask anything about documents — clauses, powers, limits &amp; more</p>
                 </div>
+
+                <!-- Original h2 (visible on desktop, hidden on mobile via CSS) -->
                 <h2>How can I help you today?</h2>
-                
-                <div class="suggestions-grid">
-                    <div class="suggestion-card" onclick="selectSuggestion('Who is approving authority under DOP clause 4.3 for Rs 2600000')">
-                        <span class="suggestion-title">Who is approving authority under DOP clause 4.3 for Rs 26 lakh?</span>
-                        <span class="suggestion-desc">Check threshold limit for stores and spares</span>
-                    </div>
-                    <div class="suggestion-card" onclick="selectSuggestion('who is approving authority under clause 4.1 for Rs 21 lakh')">
-                        <span class="suggestion-title">Who is approving authority under clause 4.1 for Rs 21 lakh?</span>
-                        <span class="suggestion-desc">Check contract award threshold limits</span>
-                    </div>
-                    <div class="suggestion-card" onclick="selectSuggestion('what does clause 4.3 cover?')">
-                        <span class="suggestion-title">What does clause 4.3 cover?</span>
-                        <span class="suggestion-desc">Check scope of stores and spares powers</span>
-                    </div>
-                    <div class="suggestion-card" onclick="selectSuggestion('what does ED stand for?')">
-                        <span class="suggestion-title">What does ED stand for?</span>
-                        <span class="suggestion-desc">Check abbreviation meanings</span>
+
+                <!-- Suggestion cards -->
+                <div class="suggestions-section">
+                    <p class="suggestions-label">✨ Try asking</p>
+                    <div class="suggestions-grid">
+                        <div class="suggestion-card" onclick="selectSuggestion('Who is approving authority under DOP clause 4.3 for Rs 2600000')">
+                            <span class="suggestion-title">Who is approving authority under DOP clause 4.3 for Rs 26 lakh?</span>
+                            <span class="suggestion-desc">Check threshold limit for stores and spares</span>
+                        </div>
+                        <div class="suggestion-card" onclick="selectSuggestion('who is approving authority under clause 4.1 for Rs 21 lakh')">
+                            <span class="suggestion-title">Who is approving authority under clause 4.1 for Rs 21 lakh?</span>
+                            <span class="suggestion-desc">Check contract award threshold limits</span>
+                        </div>
+                        <div class="suggestion-card" onclick="selectSuggestion('what does clause 4.3 cover?')">
+                            <span class="suggestion-title">What does clause 4.3 cover?</span>
+                            <span class="suggestion-desc">Check scope of stores and spares powers</span>
+                        </div>
+                        <div class="suggestion-card" onclick="selectSuggestion('what does ED stand for?')">
+                            <span class="suggestion-title">What does ED stand for?</span>
+                            <span class="suggestion-desc">Check abbreviation meanings</span>
+                        </div>
                     </div>
                 </div>
+
             </div>
+
         </div>
 
         <!-- Chat Input Area -->
