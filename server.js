@@ -192,11 +192,13 @@ function parseLimitToLakh(raw) {
 
 function extractTargetAmountLakh(question) {
     const q = question.toLowerCase()
+        .replace(/₹/g, 'rs')
         .replace(/,/g, '')
         .replace(/(?:रुपये|रुपए|रुपया|रु\.?|रू\.?)/g, 'rs')
         .replace(/(?:लाख|ल\b)/g, 'lakh')
         .replace(/(?:करोड़|करोड|सीआर\b)/g, 'crore')
-        .replace(/(?:क्लॉज|क्लाज|धारा)/g, 'clause');
+        .replace(/(?:क्लॉज|क्लाज|धारा)/g, 'clause')
+        .replace(/\/-|\/=/g, ''); // strip /- or /= typical Indian amount suffix
     const unitRegex = /(\d+(?:\.\d+)?)\s*(crore|cr|lakh|l)\b/gi;
     let match;
     unitRegex.lastIndex = 0;
