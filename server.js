@@ -753,7 +753,103 @@ function extractKeywords(text) {
     return keywords;
 }
 
-// Search API Endpoint: /ask
+// ═══════════════════════════════════════════════════════════════════════════════
+// CLAUSE CATALOGUE — in-memory index of ALL clauses present in the document DB.
+// Used by the smart query recovery engine to suggest corrections / sub-clauses.
+// Refreshed every 30 minutes; populated at server startup.
+// ═══════════════════════════════════════════════════════════════════════════════
+let CLAUSE_CATALOGUE = new Set();          // e.g. {"1","1(a)","1(b)","4","4.1","4.3",...}
+let CLAUSE_NATURE_MAP = new Map();         // clauseNum -> nature/title string (for button labels)
+
+async function refreshClauseCatalogue() {
+    try {
+        const snap = await db.collection('chunks').select('clauses', 'nature', 'docName').get();
+        const newSet = new Set();
+        const newMap = new Map();
+        snap.forEach(doc => {
+            const d = doc.data();
+            const clauses = d.clauses || [];
+            const nature = d.nature || d.text?.split('\n')[0]?.slice(0, 60) || '';
+            clauses.forEach(c => {
+                if (c && typeof c === 'string' && c.length > 0) {
+                    newSet.add(c.toLowerCase());
+                    if (nature && !newMap.has(c.toLowerCase())) {
+                        newMap.set(c.toLowerCase(), nature);
+                    }
+                }
+            });
+        });
+        CLAUSE_CATALOGUE = newSet;
+        CLAUSE_NATURE_MAP = newMap;
+        console.log(`[Catalogue] Refreshed: ${CLAUSE_CATALOGUE.size} distinct clause entries.`);
+    } catch (err) {
+        console.error('[Catalogue] Refresh error:', err.message);
+    }
+}
+// Load at startup, then refresh every 30 minutes
+refreshClauseCatalogue();
+setInterval(refreshClauseCatalogue, 30 * 60 * 1000);
+
+/**
+ * Given a parent clause number (e.g. "4" or "1"), return all sub-clause
+ * numbers from the catalogue that start with that parent.
+ */
+function getSubClauses(parentNum) {
+    const p = parentNum.toLowerCase();
+    const subs = [];
+    for (const c of CLAUSE_CATALOGUE) {
+        // Sub-clause: starts with parent + "." or parent + "(" or parent + letter
+        if (
+            c !== p &&
+            (c.startsWith(`${p}.`) || c.startsWith(`${p}(`) || new RegExp(`^${p}[a-z]$`).test(c))
+        ) {
+            subs.push(c);
+        }
+    }
+    // Sort naturally: 1(a) < 1(b) < 1.1 < 1.2 ...
+    subs.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    return subs;
+}
+
+/**
+ * Given a raw clause input (possibly malformed / spaced), find the best
+ * matching clause(s) in the catalogue using simple fuzzy rules.
+ * Returns [] if nothing plausible found.
+ */
+function fuzzyFindClauses(rawInput) {
+    const input = rawInput.toLowerCase().trim();
+    if (CLAUSE_CATALOGUE.has(input)) return [input]; // exact match
+
+    const candidates = [];
+    for (const c of CLAUSE_CATALOGUE) {
+        // Strip all non-alphanumeric from both and compare
+        const norm = (s) => s.replace(/[^a-z0-9]/g, '');
+        if (norm(c) === norm(input)) { candidates.push(c); continue; }
+        // "1 d" → "1(d)": check if rearranging with parens matches
+        const spaceConv = input.replace(/\s+/g, '(').replace(/\(([a-z])\)?$/, '($1)');
+        if (norm(c) === norm(spaceConv)) { candidates.push(c); continue; }
+    }
+    return [...new Set(candidates)];
+}
+
+/**
+ * Build a friendly interactive message with buttons for a list of clauses.
+ * @param {string[]} clauses  - Array of clause strings e.g. ["1(a)","1(b)"]
+ * @param {string} context    - Surrounding message text
+ * @param {boolean} isHindi
+ */
+function buildClauseButtons(clauses, context, isHindi) {
+    const icons = ['📋', '📌', '📎', '🗂️', '📑', '📄', '🔖', '📃'];
+    const buttons = clauses.slice(0, 8).map((c, i) => {
+        const label = isHindi ? `क्लॉज ${c} के बारे में बताएं` : `Tell me about Clause ${c}`;
+        const query = isHindi ? `क्लॉज ${c} में क्या शामिल है` : `what does clause ${c} cover`;
+        const icon = icons[i % icons.length];
+        return `<button class="chat-opt-btn" onclick="selectSuggestion('${query}')">${icon} Clause ${c.toUpperCase()}</button>`;
+    }).join('\n');
+    return `${context}\n\n${buttons}`;
+}
+
+
 app.post('/ask', async (req, res) => {
     const { question } = req.body;
     
@@ -989,6 +1085,127 @@ ${isHindiQuery ? "Write all text in Hindi (Devanagari) except HTML tags and clau
         const queryKeywords = extractKeywords(question);
         console.log(`Extracted query keywords:`, queryKeywords);
 
+        // ── SMART QUERY RECOVERY ENGINE ───────────────────────────────────────
+        // Runs BEFORE Firestore queries. Handles:
+        //   A) Parent-only clause (no sub-clause) → show available sub-clauses
+        //   B) Clause not in catalogue but similar → fuzzy "Did you mean?" 
+        //   C) Very short / no-clause query → friendly clarification prompt
+        // Skips if catalogue is empty (still loading) to avoid false positives.
+        if (CLAUSE_CATALOGUE.size > 0) {
+
+            // ── A: Only a parent clause detected, check if sub-clauses exist ──
+            if (clauseMatches.length === 1) {
+                const candidate = clauseMatches[0].toLowerCase();
+                const subClauses = getSubClauses(candidate);
+
+                // If sub-clauses exist AND the parent itself is not in catalogue
+                // (meaning user said "clause 1" but 1(a),1(b)... are what exists)
+                const parentInCat = CLAUSE_CATALOGUE.has(candidate);
+                if (subClauses.length > 0 && !parentInCat) {
+                    const subList = subClauses.map(s => `<strong>${s.toUpperCase()}</strong>`).join(', ');
+                    const msg = isHindiQuery
+                        ? `क्लॉज **${candidate.toUpperCase()}** में कई उप-खंड हैं। आप किस उप-खंड के बारे में जानना चाहते हैं?\n\nउपलब्ध उप-खंड: ${subList}`
+                        : `Clause **${candidate.toUpperCase()}** has multiple sub-clauses. Which one would you like to know about?\n\nAvailable sub-clauses: ${subList}`;
+                    const fullMsg = buildClauseButtons(subClauses, msg, isHindiQuery);
+                    return res.json({
+                        answer: formatAnswer(fullMsg),
+                        sourcePdf: '-', pageNumber: '-',
+                        confidence: '-', clause: `Clause ${candidate.toUpperCase()}`
+                    });
+                }
+
+                // If sub-clauses exist AND parent IS in catalogue too → still show sub-clause options after answering
+                // (handled naturally below — no interception needed)
+
+                // If clause not in catalogue at all → fuzzy search
+                if (!parentInCat && subClauses.length === 0) {
+                    const fuzzy = fuzzyFindClauses(candidate);
+                    if (fuzzy.length > 0) {
+                        // Found close matches → confirm + show buttons
+                        const suggestions = fuzzy.map(f =>
+                            `<button class="chat-opt-btn" onclick="selectSuggestion('what does clause ${f} cover')">📌 Clause ${f.toUpperCase()}</button>`
+                        ).join('\n');
+                        const msg = isHindiQuery
+                            ? `क्या आप **क्लॉज ${fuzzy[0].toUpperCase()}** के बारे में पूछ रहे थे? यहाँ कुछ संबंधित विकल्प दिए गए हैं:\n\n${suggestions}`
+                            : `Did you mean **Clause ${fuzzy[0].toUpperCase()}**? Here are the closest matches I found:\n\n${suggestions}`;
+                        return res.json({
+                            answer: formatAnswer(msg),
+                            sourcePdf: '-', pageNumber: '-',
+                            confidence: '-', clause: `Suggestion`
+                        });
+                    } else {
+                        // Clause number doesn't exist at all → show all top-level clauses
+                        const topLevel = [...CLAUSE_CATALOGUE]
+                            .filter(c => /^\d+$/.test(c) || /^\d+\.\d+$/.test(c))
+                            .sort((a, b) => parseFloat(a) - parseFloat(b))
+                            .slice(0, 10);
+                        const suggestions = topLevel.map((c, i) => {
+                            const icons = ['📋','📌','📎','🗂️','📑','📄','🔖','📃','📊','💼'];
+                            return `<button class="chat-opt-btn" onclick="selectSuggestion('what does clause ${c} cover')">${icons[i]} Clause ${c}</button>`;
+                        }).join('\n');
+                        const msg = isHindiQuery
+                            ? `मुझे **क्लॉज ${candidate.toUpperCase()}** दस्तावेज़ में नहीं मिला। यहाँ उपलब्ध क्लॉज़ की सूची है — कृपया उचित क्लॉज चुनें:\n\n${suggestions}`
+                            : `I couldn't find **Clause ${candidate.toUpperCase()}** in the document. Here are the available clauses — please select the one you meant:\n\n${suggestions}`;
+                        return res.json({
+                            answer: formatAnswer(msg),
+                            sourcePdf: '-', pageNumber: '-',
+                            confidence: '-', clause: `Not Found`
+                        });
+                    }
+                }
+            }
+
+            // ── B: Multi-word clause query with no extracted clause number ────
+            // e.g. "clause d 1", "1 d clause", "section 4 b" (already normalized)
+            if (clauseMatches.length === 0) {
+                // Try to find a clause-like pattern in the raw question
+                const rawClauseHint = question.match(/\b(\d+)\s+([a-z])\b/i)
+                                   || question.match(/\b([a-z])\s+(\d+)\b/i);
+                if (rawClauseHint) {
+                    // Reconstruct as "N(L)" and "L(N)" and fuzzy search
+                    const [, p1, p2] = rawClauseHint;
+                    const attempts = [];
+                    if (/\d/.test(p1) && /[a-z]/i.test(p2)) attempts.push(`${p1}(${p2.toLowerCase()})`);
+                    if (/[a-z]/i.test(p1) && /\d/.test(p2)) attempts.push(`${p2}(${p1.toLowerCase()})`);
+                    const found = attempts.flatMap(a => fuzzyFindClauses(a));
+                    if (found.length > 0) {
+                        const suggestions = found.slice(0, 5).map(f =>
+                            `<button class="chat-opt-btn" onclick="selectSuggestion('what does clause ${f} cover')">📌 Clause ${f.toUpperCase()}</button>`
+                        ).join('\n');
+                        const msg = isHindiQuery
+                            ? `क्या आप इनमें से किसी क्लॉज के बारे में पूछ रहे थे?\n\n${suggestions}`
+                            : `I think you might be asking about one of these clauses. Did you mean:\n\n${suggestions}`;
+                        return res.json({
+                            answer: formatAnswer(msg),
+                            sourcePdf: '-', pageNumber: '-',
+                            confidence: '-', clause: `Suggestion`
+                        });
+                    }
+                }
+
+                // Very short query with no clause and no useful content
+                if (question.trim().split(/\s+/).length <= 3 && queryKeywords.length <= 1) {
+                    const topLevel = [...CLAUSE_CATALOGUE]
+                        .filter(c => /^\d+$/.test(c) || /^\d+\.\d+$/.test(c))
+                        .sort((a, b) => parseFloat(a) - parseFloat(b))
+                        .slice(0, 8);
+                    const suggestions = topLevel.map((c, i) => {
+                        const icons = ['📋','📌','📎','🗂️','📑','📄','🔖','📃'];
+                        return `<button class="chat-opt-btn" onclick="selectSuggestion('what does clause ${c} cover')">${icons[i]} Clause ${c}</button>`;
+                    }).join('\n');
+                    const msg = isHindiQuery
+                        ? `आपका प्रश्न अधूरा लग रहा है। कृपया स्पष्ट करें कि आप क्या जानना चाहते हैं। यहाँ उपलब्ध क्लॉज़ की सूची है:\n\n${suggestions}`
+                        : `Your query seems incomplete. Could you tell me more? Here are the available clauses you can explore:\n\n${suggestions}`;
+                    return res.json({
+                        answer: formatAnswer(msg),
+                        sourcePdf: '-', pageNumber: '-',
+                        confidence: '-', clause: `Clarification`
+                    });
+                }
+            }
+        }
+        // ── End Smart Query Recovery Engine ──────────────────────────────────
+
         let directChunks = [];
         // Expand targets to include parent and siblings (so remarks under the last subclause are fetched)
         let clauseTargets = [];
@@ -1141,9 +1358,19 @@ ${isHindiQuery ? "Write all text in Hindi (Devanagari) except HTML tags and clau
             console.log(`Top chunk: raw=${topDoc.rawSimilarity?.toFixed(4)}, boosted=${topDoc.boostedSimilarity?.toFixed(4)}, exactClauseMatch=${topDoc.isExactClauseMatch} -> confidence: ${confidencePercentage}%`);
             
             if (highestSimilarity < 0.20) {
-                const fallbackHindi = `मैं आपका दस्तावेज़ एआई सहायक (Document AI Assistant) हूँ, जो अपलोड किए गए डेलीगेशन ऑफ पावर्स (DOP) मैनुअल में विशेषज्ञता रखता है। मैं केवल इन दस्तावेजों से संबंधित प्रश्नों के उत्तर दे सकता हूँ (जैसे मंजूरी देने वाले प्राधिकारी, वित्तीय सीमाएं और नीति नियम)। कृपया DOP मैनुअल से संबंधित प्रश्न पूछें।${optionsHindi}`;
-                const fallbackEnglish = `I am your Document AI Assistant, specialized in the uploaded Delegation of Powers (DOP) policy manuals. I can only answer questions related to these documents (such as approval authorities, threshold limits, and policy clauses). Please submit a query related to the DOP manuals.${optionsEnglish}`;
-                
+                // Build interactive suggestions from the live catalogue
+                const topLevel = [...CLAUSE_CATALOGUE]
+                    .filter(c => /^\d+$/.test(c) || /^\d+\.\d+$/.test(c))
+                    .sort((a, b) => parseFloat(a) - parseFloat(b))
+                    .slice(0, 8);
+                const clauseButtonsLow = topLevel.map((c, i) => {
+                    const icons = ['📋','📌','📎','🗂️','📑','📄','🔖','📃'];
+                    return `<button class="chat-opt-btn" onclick="selectSuggestion('what does clause ${c} cover')">${icons[i]} Clause ${c}</button>`;
+                }).join('\n');
+
+                const fallbackHindi = `आपके प्रश्न से मुझे DOP मैनुअल में कोई मिलान नहीं मिला।\n\nकृपया नीचे दिए गए उपलब्ध क्लॉज़ में से चुनें, या अधिक विशिष्ट प्रश्न पूछें:\n\n${clauseButtonsLow}`;
+                const fallbackEnglish = `I couldn't find a strong match for your query in the DOP manual.\n\nPlease select from the available clauses below, or try rephrasing your question:\n\n${clauseButtonsLow}`;
+
                 return res.json({
                     answer: formatAnswer(isHindiQuery ? fallbackHindi : fallbackEnglish),
                     sourcePdf: "-",
@@ -1152,6 +1379,7 @@ ${isHindiQuery ? "Write all text in Hindi (Devanagari) except HTML tags and clau
                     clause: "-"
                 });
             }
+
     }
         
         // ── 5. Deterministic authority resolution for DOP threshold queries ────
