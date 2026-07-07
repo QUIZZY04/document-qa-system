@@ -849,6 +849,98 @@ Feel free to click any of these options or ask your own question!`;
     try {
         console.log(`Searching answers for query: "${question}"...`);
 
+        // ── Comparison / Difference query detection ──────────────────────────
+        // Triggers when user asks: "difference between clause X and Y",
+        // "compare clause X and Y", "X vs Y", "contrast clause X and Y" etc.
+        const comparisonTrigger = /\b(?:diff(?:erence)?|compare|comparison|contrast|versus|vs\.?|between)\b/i;
+        const compClauseRegex = /\b(?:clause|cl|section|si)\s+(\d+(?:\.\d+)?(?:\([a-z\d]+\)){0,2})/gi;
+        const compRawRegex = /(?<!\w)(\d+(?:\.\d+)?(?:\([a-z\d]+\)){1,2})(?!\w)/gi;
+
+        if (comparisonTrigger.test(question)) {
+            // Extract the two clause numbers
+            const compMatches = [];
+            let m;
+            const q = question.toLowerCase();
+            const re1 = /\b(?:clause|cl|section|si)\s+(\d+(?:\.\d+)?(?:\([a-z\d]+\)){0,2})/gi;
+            while ((m = re1.exec(q)) !== null) compMatches.push(m[1]);
+            if (compMatches.length < 2) {
+                // fallback: grab bare numbers like "4.1 and 4.3"
+                const re2 = /(\d+(?:\.\d+)?)(?:\s*(?:and|&|vs\.?|,)\s*)(\d+(?:\.\d+)?)/i;
+                const m2 = re2.exec(q);
+                if (m2) { compMatches.push(m2[1]); compMatches.push(m2[2]); }
+            }
+
+            if (compMatches.length >= 2) {
+                const clauseA = compMatches[0];
+                const clauseB = compMatches[1];
+                console.log(`[COMPARISON] Detected: Clause ${clauseA} vs Clause ${clauseB}`);
+
+                // Fetch chunks for both clauses in parallel
+                const [snapA, snapB] = await Promise.all([
+                    db.collection('chunks').where('clauses', 'array-contains-any', [clauseA]).get().catch(() => ({ docs: [] })),
+                    db.collection('chunks').where('clauses', 'array-contains-any', [clauseB]).get().catch(() => ({ docs: [] }))
+                ]);
+
+                const textA = snapA.docs.slice(0, 3).map(d => d.data().text).join('\n');
+                const textB = snapB.docs.slice(0, 3).map(d => d.data().text).join('\n');
+
+                const compSystemPrompt = `You are an expert document assistant.
+The user wants a comparison between two clauses.
+Produce a comprehensive side-by-side comparison table as clean HTML.
+
+Rules:
+1. Output ONLY a JSON object: {"answer": "<html table here>", "clause": "Clause ${clauseA} vs ${clauseB}"}
+2. The "answer" value must be a valid HTML string containing:
+   - A brief 1-sentence intro (e.g. "Here is a comparison of Clause ${clauseA} and Clause ${clauseB}:")
+   - Then a <table> element with class "compare-table"
+   - Table header: <th>Aspect</th> <th>Clause ${clauseA}</th> <th>Clause ${clauseB}</th>
+   - Rows covering: Purpose/Scope, Who Can Approve (list each authority & their limit), Financial Limits (each tier), Subject Matter / Nature, Key Conditions or Remarks
+   - Use <strong> for authority names and amounts
+   - End with 1 sentence noting the key difference
+3. Use ONLY information from the provided context. If a field is not mentioned, write "Not specified".
+4. Do NOT use markdown. Use only HTML in the answer.
+${isHindiQuery ? "Write all text in Hindi (Devanagari) except HTML tags and clause numbers." : ""}`;
+
+                const compUserPrompt = `Context for Clause ${clauseA}:\n${textA || 'Not available in documents.'}\n\n---\n\nContext for Clause ${clauseB}:\n${textB || 'Not available in documents.'}\n\nUser question: ${question}\n\nAnswer JSON:`;
+
+                const compCompletion = await openai.chat.completions.create({
+                    model: 'gpt-4o-mini',
+                    messages: [
+                        { role: 'system', content: compSystemPrompt },
+                        { role: 'user',   content: compUserPrompt }
+                    ],
+                    response_format: { type: 'json_object' },
+                    temperature: 0,
+                    max_tokens: 900
+                });
+
+                let compAnswer = '';
+                let compClause = `Clause ${clauseA} vs ${clauseB}`;
+                try {
+                    const parsed = JSON.parse(compCompletion.choices[0].message.content);
+                    compAnswer = parsed.answer || '';
+                    compClause = parsed.clause || compClause;
+                } catch (e) {
+                    compAnswer = compCompletion.choices[0].message.content;
+                }
+
+                // Wrap in a scroll container for mobile
+                const wrappedAnswer = `<div class="compare-table-wrap">${compAnswer}</div>`;
+
+                const sourceDocA = snapA.docs[0]?.data()?.docName || '-';
+                const pageA = snapA.docs[0]?.data()?.pageNumber || '-';
+
+                return res.json({
+                    answer: formatAnswer(wrappedAnswer),
+                    sourcePdf: sourceDocA,
+                    pageNumber: pageA.toString(),
+                    confidence: '90%',
+                    clause: compClause
+                });
+            }
+        }
+        // ── End comparison handler ────────────────────────────────────────────
+
         // Normalize Hindi terms to English equivalents for extraction and matching
         let normalizedQuestion = question.toLowerCase()
             .replace(/(?:रुपये|रुपए|रुपया|रु\.?|रू\.?)/g, 'rs')

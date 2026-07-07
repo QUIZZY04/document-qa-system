@@ -571,6 +571,87 @@ html, body {
 .typing-dot:nth-child(2) { animation-delay: -0.16s; }
 .typing-dot:nth-child(3) { animation-delay: 0s; }
 
+/* ── Comparison table (rendered inside chat bubbles) ──────────────────── */
+.compare-table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    margin: 8px 0 4px;
+    border-radius: 12px;
+    box-shadow: 0 2px 12px rgba(79,70,229,0.10);
+}
+
+.compare-table {
+    width: 100%;
+    min-width: 460px;
+    border-collapse: collapse;
+    font-size: 13px;
+    line-height: 1.45;
+    background: #ffffff;
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+/* Header row */
+.compare-table thead tr {
+    background: linear-gradient(90deg, #4f46e5 0%, #7c3aed 100%);
+    color: #ffffff;
+}
+.compare-table thead th {
+    padding: 10px 14px;
+    text-align: left;
+    font-weight: 700;
+    font-size: 12px;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+}
+/* Column colour accents in header */
+.compare-table thead th:nth-child(2) { background: rgba(255,255,255,0.08); }
+.compare-table thead th:nth-child(3) { background: rgba(255,255,255,0.16); }
+
+/* Body rows */
+.compare-table tbody tr {
+    border-bottom: 1px solid #e5e7eb;
+    transition: background 0.15s ease;
+}
+.compare-table tbody tr:last-child { border-bottom: none; }
+.compare-table tbody tr:hover { background: #f5f3ff; }
+.compare-table tbody tr:nth-child(even) { background: #fafafa; }
+.compare-table tbody tr:nth-child(even):hover { background: #f5f3ff; }
+
+/* Cells */
+.compare-table td {
+    padding: 9px 14px;
+    vertical-align: top;
+    color: #1e293b;
+}
+/* Aspect column (first) */
+.compare-table td:first-child {
+    font-weight: 700;
+    color: #4f46e5;
+    white-space: nowrap;
+    background: #f5f3ff;
+    border-right: 2px solid #e0e7ff;
+    width: 130px;
+}
+/* Clause A column */
+.compare-table td:nth-child(2) {
+    border-right: 1px solid #e5e7eb;
+}
+/* Key difference summary row */
+.compare-table tr.diff-summary td {
+    background: #fef3c7;
+    font-style: italic;
+    color: #92400e;
+}
+
+/* Intro sentence above table */
+.compare-table-wrap > p,
+.compare-table-wrap > br + p {
+    font-size: 13px;
+    color: #374151;
+    margin-bottom: 8px;
+}
+
 /* Sidebar Overlay for Mobile */
 .sidebar-overlay {
     position: fixed;
